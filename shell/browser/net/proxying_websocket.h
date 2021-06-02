@@ -5,7 +5,6 @@
 #ifndef SHELL_BROWSER_NET_PROXYING_WEBSOCKET_H_
 #define SHELL_BROWSER_NET_PROXYING_WEBSOCKET_H_
 
-#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -31,7 +30,7 @@ namespace electron {
 // The code is referenced from the
 // extensions::WebRequestProxyingWebSocket class.
 class ProxyingWebSocket : public network::mojom::WebSocketHandshakeClient,
-                          public network::mojom::AuthenticationHandler,
+                          public network::mojom::WebSocketAuthenticationHandler,
                           public network::mojom::TrustedHeaderClient {
  public:
   using WebSocketFactory = content::ContentBrowserClient::WebSocketFactory;
@@ -79,7 +78,7 @@ class ProxyingWebSocket : public network::mojom::WebSocketHandshakeClient,
       mojo::ScopedDataPipeConsumerHandle readable,
       mojo::ScopedDataPipeProducerHandle writable) override;
 
-  // network::mojom::AuthenticationHandler method:
+  // network::mojom::WebSocketAuthenticationHandler method:
   void OnAuthRequired(const net::AuthChallengeInfo& auth_info,
                       const scoped_refptr<net::HttpResponseHeaders>& headers,
                       const net::IPEndPoint& remote_endpoint,
@@ -144,7 +143,7 @@ class ProxyingWebSocket : public network::mojom::WebSocketHandshakeClient,
       forwarding_handshake_client_;
   mojo::Receiver<network::mojom::WebSocketHandshakeClient>
       receiver_as_handshake_client_{this};
-  mojo::Receiver<network::mojom::AuthenticationHandler>
+  mojo::Receiver<network::mojom::WebSocketAuthenticationHandler>
       receiver_as_auth_handler_{this};
   mojo::Receiver<network::mojom::TrustedHeaderClient>
       receiver_as_header_client_{this};

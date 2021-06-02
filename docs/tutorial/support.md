@@ -16,7 +16,6 @@ you can interact with the community in these locations:
   * Sharing ideas with other Electron app developers
   * And more!
 * [`electron`](https://discuss.atom.io/c/electron) category on the Atom forums
-* `#atom-shell` channel on Freenode
 * `#electron` channel on [Atom's Slack](https://discuss.atom.io/t/join-us-on-slack/16638?source_topic_id=25406)
 * [`electron-ru`](https://telegram.me/electron_ru) *(Russian)*
 * [`electron-br`](https://electron-br.slack.com) *(Brazilian Portuguese)*
@@ -64,9 +63,9 @@ until the maintainers feel the maintenance burden is too high to continue doing 
 
 ### Currently supported versions
 
+* 13.x.y
 * 12.x.y
 * 11.x.y
-* 10.x.y
 
 ### End-of-life
 
@@ -94,7 +93,7 @@ Following platforms are supported by Electron:
 ### macOS
 
 Only 64bit binaries are provided for macOS, and the minimum macOS version
-supported is macOS 10.10 (Yosemite).
+supported is macOS 10.11 (El Capitan).
 
 Native support for Apple Silicon (`arm64`) devices was added in Electron 11.0.0.
 

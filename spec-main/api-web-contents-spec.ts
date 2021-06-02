@@ -3,8 +3,7 @@ import { AddressInfo } from 'net';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
-import * as ChildProcess from 'child_process';
-import { BrowserWindow, ipcMain, webContents, session, WebContents, app } from 'electron/main';
+import { BrowserWindow, ipcMain, webContents, session, WebContents, app, BrowserView } from 'electron/main';
 import { clipboard } from 'electron/common';
 import { emittedOnce } from './events-helpers';
 import { closeAllWindows } from './window-helpers';
@@ -50,7 +49,7 @@ describe('webContents module', () => {
 
   describe('will-prevent-unload event', function () {
     afterEach(closeAllWindows);
-    it('does not emit if beforeunload returns undefined', async () => {
+    it('does not emit if beforeunload returns undefined in a BrowserWindow', async () => {
       const w = new BrowserWindow({ show: false });
       w.webContents.once('will-prevent-unload', () => {
         expect.fail('should not have fired');
@@ -61,14 +60,41 @@ describe('webContents module', () => {
       await wait;
     });
 
-    it('emits if beforeunload returns false', async () => {
+    it('does not emit if beforeunload returns undefined in a BrowserView', async () => {
+      const w = new BrowserWindow({ show: false });
+      const view = new BrowserView();
+      w.setBrowserView(view);
+      view.setBounds(w.getBounds());
+
+      view.webContents.once('will-prevent-unload', () => {
+        expect.fail('should not have fired');
+      });
+
+      await view.webContents.loadFile(path.join(__dirname, 'fixtures', 'api', 'beforeunload-undefined.html'));
+      const wait = emittedOnce(w, 'closed');
+      w.close();
+      await wait;
+    });
+
+    it('emits if beforeunload returns false in a BrowserWindow', async () => {
       const w = new BrowserWindow({ show: false });
       await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'beforeunload-false.html'));
       w.close();
       await emittedOnce(w.webContents, 'will-prevent-unload');
     });
 
-    it('supports calling preventDefault on will-prevent-unload events', async () => {
+    it('emits if beforeunload returns false in a BrowserView', async () => {
+      const w = new BrowserWindow({ show: false });
+      const view = new BrowserView();
+      w.setBrowserView(view);
+      view.setBounds(w.getBounds());
+
+      await view.webContents.loadFile(path.join(__dirname, 'fixtures', 'api', 'beforeunload-false.html'));
+      w.close();
+      await emittedOnce(view.webContents, 'will-prevent-unload');
+    });
+
+    it('supports calling preventDefault on will-prevent-unload events in a BrowserWindow', async () => {
       const w = new BrowserWindow({ show: false });
       w.webContents.once('will-prevent-unload', event => event.preventDefault());
       await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'beforeunload-false.html'));
@@ -393,7 +419,7 @@ describe('webContents module', () => {
     const testFn = (process.platform === 'win32' && process.arch === 'arm64' ? it.skip : it);
     testFn('returns the focused web contents', async () => {
       const w = new BrowserWindow({ show: true });
-      await w.loadURL('about:blank');
+      await w.loadFile(path.join(__dirname, 'fixtures', 'blank.html'));
       expect(webContents.getFocusedWebContents().id).to.equal(w.webContents.id);
 
       const devToolsOpened = emittedOnce(w.webContents, 'devtools-opened');
@@ -1268,16 +1294,6 @@ describe('webContents module', () => {
     });
   });
 
-  describe('create()', () => {
-    it('does not crash on exit', async () => {
-      const appPath = path.join(fixturesPath, 'api', 'leak-exit-webcontents.js');
-      const electronPath = process.execPath;
-      const appProcess = ChildProcess.spawn(electronPath, [appPath]);
-      const [code] = await emittedOnce(appProcess, 'close');
-      expect(code).to.equal(0);
-    });
-  });
-
   const crashPrefs = [
     {
       nodeIntegration: true
@@ -2015,13 +2031,6 @@ describe('webContents module', () => {
         done();
       });
       contents.loadURL('about:blank').then(() => contents.forcefullyCrashRenderer());
-    });
-
-    it('does not crash main process when quiting in it', async () => {
-      const appPath = path.join(mainFixturesPath, 'apps', 'quit', 'main.js');
-      const appProcess = ChildProcess.spawn(process.execPath, [appPath]);
-      const [code] = await emittedOnce(appProcess, 'close');
-      expect(code).to.equal(0);
     });
   });
 

@@ -144,8 +144,9 @@ class ElectronDelegatedFrameHostClient
     return *view_->GetBackgroundColor();
   }
 
-  void OnFrameTokenChanged(uint32_t frame_token) override {
-    view_->render_widget_host()->DidProcessFrame(frame_token);
+  void OnFrameTokenChanged(uint32_t frame_token,
+                           base::TimeTicks activation_time) override {
+    view_->render_widget_host()->DidProcessFrame(frame_token, activation_time);
   }
 
   float GetDeviceScaleFactor() const override {
@@ -188,7 +189,15 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
   DCHECK(render_widget_host_);
   DCHECK(!render_widget_host_->GetView());
 
-  current_device_scale_factor_ = kDefaultScaleFactor;
+  // Initialize a display struct as needed, to cache the scale factor.
+  if (display_list_.displays().empty()) {
+    display_list_ = display::DisplayList(
+        {display::Display(display::kDefaultDisplayId)},
+        display::kDefaultDisplayId, display::kDefaultDisplayId);
+  }
+  display::Display current_display = *display_list_.GetCurrentDisplayIterator();
+  current_display.set_device_scale_factor(kDefaultScaleFactor);
+  display_list_.UpdateDisplay(current_display);
 
   delegated_frame_host_allocator_.GenerateId();
   delegated_frame_host_surface_id_ =
@@ -455,7 +464,8 @@ void OffScreenRenderWidgetHostView::Destroy() {
   delete this;
 }
 
-void OffScreenRenderWidgetHostView::SetTooltipText(const base::string16&) {}
+void OffScreenRenderWidgetHostView::UpdateTooltipUnderCursor(
+    const std::u16string&) {}
 
 uint32_t OffScreenRenderWidgetHostView::GetCaptureSequenceNumber() const {
   return latest_capture_sequence_number_;
@@ -474,7 +484,7 @@ void OffScreenRenderWidgetHostView::GetScreenInfo(
   screen_info->depth = 24;
   screen_info->depth_per_component = 8;
   screen_info->orientation_angle = 0;
-  screen_info->device_scale_factor = current_device_scale_factor_;
+  screen_info->device_scale_factor = GetCurrentDeviceScaleFactor();
   screen_info->orientation_type =
       blink::mojom::ScreenOrientation::kLandscapePrimary;
   screen_info->rect = gfx::Rect(size_);
@@ -514,7 +524,7 @@ void OffScreenRenderWidgetHostView::ImeCompositionRangeChanged(
 
 gfx::Size OffScreenRenderWidgetHostView::GetCompositorViewportPixelSize() {
   return gfx::ScaleToCeiledSize(GetRequestedRendererSize(),
-                                current_device_scale_factor_);
+                                GetCurrentDeviceScaleFactor());
 }
 
 content::RenderWidgetHostViewBase*
@@ -644,6 +654,13 @@ void OffScreenRenderWidgetHostView::SpeakSelection() {}
 void OffScreenRenderWidgetHostView::SetWindowFrameInScreen(
     const gfx::Rect& rect) {}
 
+void OffScreenRenderWidgetHostView::ShowSharePicker(
+    const std::string& title,
+    const std::string& text,
+    const std::string& url,
+    const std::vector<std::string>& file_paths,
+    blink::mojom::ShareService::ShareCallback callback) {}
+
 bool OffScreenRenderWidgetHostView::UpdateNSViewAndDisplay() {
   return false;
 }
@@ -663,12 +680,13 @@ void OffScreenRenderWidgetHostView::OnPaint(const gfx::Rect& damage_rect,
 }
 
 gfx::Size OffScreenRenderWidgetHostView::SizeInPixels() {
+  float sf = GetCurrentDeviceScaleFactor();
   if (IsPopupWidget()) {
-    return gfx::ToFlooredSize(gfx::ConvertSizeToPixels(
-        popup_position_.size(), current_device_scale_factor_));
+    return gfx::ToFlooredSize(
+        gfx::ConvertSizeToPixels(popup_position_.size(), sf));
   } else {
-    return gfx::ToFlooredSize(gfx::ConvertSizeToPixels(
-        GetViewBounds().size(), current_device_scale_factor_));
+    return gfx::ToFlooredSize(
+        gfx::ConvertSizeToPixels(GetViewBounds().size(), sf));
   }
 }
 
@@ -684,6 +702,7 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
   if (proxy_views_.empty() && !popup_host_view_) {
     frame = GetBacking();
   } else {
+    float sf = GetCurrentDeviceScaleFactor();
     frame.allocN32Pixels(size_in_pixels.width(), size_in_pixels.height(),
                          false);
     if (!GetBacking().drawsNothing()) {
@@ -693,8 +712,7 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
       if (popup_host_view_ && !popup_host_view_->GetBacking().drawsNothing()) {
         gfx::Rect rect = popup_host_view_->popup_position_;
         gfx::Point origin_in_pixels =
-            gfx::ToFlooredPoint(gfx::ConvertPointToPixels(
-                rect.origin(), current_device_scale_factor_));
+            gfx::ToFlooredPoint(gfx::ConvertPointToPixels(rect.origin(), sf));
         canvas.writePixels(popup_host_view_->GetBacking(), origin_in_pixels.x(),
                            origin_in_pixels.y());
       }
@@ -702,8 +720,7 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
       for (auto* proxy_view : proxy_views_) {
         gfx::Rect rect = proxy_view->GetBounds();
         gfx::Point origin_in_pixels =
-            gfx::ToFlooredPoint(gfx::ConvertPointToPixels(
-                rect.origin(), current_device_scale_factor_));
+            gfx::ToFlooredPoint(gfx::ConvertPointToPixels(rect.origin(), sf));
         canvas.writePixels(*proxy_view->GetBitmap(), origin_in_pixels.x(),
                            origin_in_pixels.y());
       }
@@ -720,13 +737,13 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
 
 void OffScreenRenderWidgetHostView::OnPopupPaint(const gfx::Rect& damage_rect) {
   InvalidateBounds(gfx::ToEnclosingRect(
-      gfx::ConvertRectToPixels(damage_rect, current_device_scale_factor_)));
+      gfx::ConvertRectToPixels(damage_rect, GetCurrentDeviceScaleFactor())));
 }
 
 void OffScreenRenderWidgetHostView::OnProxyViewPaint(
     const gfx::Rect& damage_rect) {
   InvalidateBounds(gfx::ToEnclosingRect(
-      gfx::ConvertRectToPixels(damage_rect, current_device_scale_factor_)));
+      gfx::ConvertRectToPixels(damage_rect, GetCurrentDeviceScaleFactor())));
 }
 
 void OffScreenRenderWidgetHostView::HoldResize() {
@@ -975,10 +992,18 @@ void OffScreenRenderWidgetHostView::ResizeRootLayer(bool force) {
   display::Display display =
       display::Screen::GetScreen()->GetDisplayNearestView(GetNativeView());
   const float scaleFactor = display.device_scale_factor();
-  const bool scaleFactorDidChange =
-      (scaleFactor != current_device_scale_factor_);
+  float sf = GetCurrentDeviceScaleFactor();
+  const bool scaleFactorDidChange = scaleFactor != sf;
 
-  current_device_scale_factor_ = scaleFactor;
+  // Initialize a display struct as needed, to cache the scale factor.
+  if (display_list_.displays().empty()) {
+    display_list_ = display::DisplayList(
+        {display::Display(display::kDefaultDisplayId)},
+        display::kDefaultDisplayId, display::kDefaultDisplayId);
+  }
+  display::Display current_display = *display_list_.GetCurrentDisplayIterator();
+  current_display.set_device_scale_factor(scaleFactor);
+  display_list_.UpdateDisplay(current_display);
 
   gfx::Size size;
   if (!IsPopupWidget())
@@ -992,14 +1017,13 @@ void OffScreenRenderWidgetHostView::ResizeRootLayer(bool force) {
 
   GetRootLayer()->SetBounds(gfx::Rect(size));
 
-  const gfx::Size& size_in_pixels = gfx::ToFlooredSize(
-      gfx::ConvertSizeToPixels(size, current_device_scale_factor_));
+  const gfx::Size& size_in_pixels =
+      gfx::ToFlooredSize(gfx::ConvertSizeToPixels(size, sf));
 
   if (compositor_) {
     compositor_allocator_.GenerateId();
     compositor_surface_id_ = compositor_allocator_.GetCurrentLocalSurfaceId();
-    compositor_->SetScaleAndSize(current_device_scale_factor_, size_in_pixels,
-                                 compositor_surface_id_);
+    compositor_->SetScaleAndSize(sf, size_in_pixels, compositor_surface_id_);
   }
 
   delegated_frame_host_allocator_.GenerateId();

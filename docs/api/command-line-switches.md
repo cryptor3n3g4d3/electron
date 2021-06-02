@@ -66,11 +66,6 @@ Forces the maximum disk space to be used by the disk cache, in bytes.
 Enables caller stack logging for the following APIs (filtering events):
 
 * `desktopCapturer.getSources()` / `desktop-capturer-get-sources`
-* `remote.require()` / `remote-require`
-* `remote.getGlobal()` / `remote-get-builtin`
-* `remote.getBuiltin()` / `remote-get-global`
-* `remote.getCurrentWindow()` / `remote-get-current-window`
-* `remote.getCurrentWebContents()` / `remote-get-current-web-contents`
 
 ### --enable-logging
 
@@ -79,6 +74,12 @@ Prints Chromium's logging into console.
 This switch can not be used in `app.commandLine.appendSwitch` since it is parsed
 earlier than user's app is loaded, but you can set the `ELECTRON_ENABLE_LOGGING`
 environment variable to achieve the same effect.
+
+### --force-fieldtrials=`trials`
+
+Field trials to be forcefully enabled or disabled.
+
+For example: `WebRTC-Audio-Red-For-Opus/Enabled/`
 
 ### --host-rules=`rules`
 
@@ -136,7 +137,8 @@ proxy server flags that are passed.
 
 ### --no-sandbox
 
-Disables Chromium sandbox, which is now enabled by default.
+Disables the Chromium [sandbox](https://www.chromium.org/developers/design-documents/sandbox).
+Forces renderer process and Chromium helper processes to run un-sandboxed.
 Should only be used for testing.
 
 ### --proxy-bypass-list=`hosts`

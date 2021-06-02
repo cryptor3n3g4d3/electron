@@ -5,6 +5,7 @@ import * as fs from 'fs-extra';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
+import * as cp from 'child_process';
 
 import { closeWindow } from './window-helpers';
 import { emittedOnce } from './events-helpers';
@@ -352,6 +353,31 @@ describe('contextBridge', () => {
         expect(result).equal('return-value');
       });
 
+      it('should not double-proxy functions when they are returned to their origin side of the bridge', async () => {
+        await makeBindingWindow(() => {
+          contextBridge.exposeInMainWorld('example', (fn: any) => fn);
+        });
+        const result = await callWithBindings(async (root: any) => {
+          const fn = () => null;
+          return root.example(fn) === fn;
+        });
+        expect(result).equal(true);
+      });
+
+      it('should properly handle errors thrown in proxied functions', async () => {
+        await makeBindingWindow(() => {
+          contextBridge.exposeInMainWorld('example', () => { throw new Error('oh no'); });
+        });
+        const result = await callWithBindings(async (root: any) => {
+          try {
+            root.example();
+          } catch (e) {
+            return e.message;
+          }
+        });
+        expect(result).equal('oh no');
+      });
+
       it('should proxy methods that are callable multiple times', async () => {
         await makeBindingWindow(() => {
           contextBridge.exposeInMainWorld('example', {
@@ -556,6 +582,33 @@ describe('contextBridge', () => {
           return root.example.getElemInfo(() => document.body);
         });
         expect(result).to.deep.equal(['BODY', 'HTMLBodyElement', 'function']);
+      });
+
+      it('should handle Blobs', async () => {
+        await makeBindingWindow(() => {
+          contextBridge.exposeInMainWorld('example', {
+            getBlob: () => new Blob(['ab', 'cd'])
+          });
+        });
+        const result = await callWithBindings(async (root: any) => {
+          return [await root.example.getBlob().text()];
+        });
+        expect(result).to.deep.equal(['abcd']);
+      });
+
+      it('should handle Blobs going backwards over the bridge', async () => {
+        await makeBindingWindow(() => {
+          contextBridge.exposeInMainWorld('example', {
+            getBlobText: async (fn: Function) => {
+              const blob = fn();
+              return [await blob.text()];
+            }
+          });
+        });
+        const result = await callWithBindings((root: any) => {
+          return root.example.getBlobText(() => new Blob(['12', '45']));
+        });
+        expect(result).to.deep.equal(['1245']);
       });
 
       // Can only run tests which use the GCRunner in non-sandboxed environments
@@ -763,7 +816,8 @@ describe('contextBridge', () => {
             symbolKeyed: {
               [Symbol('foo')]: 123
             },
-            getBody: () => document.body
+            getBody: () => document.body,
+            getBlob: () => new Blob(['ab', 'cd'])
           });
         });
         const result = await callWithBindings(async (root: any) => {
@@ -836,7 +890,8 @@ describe('contextBridge', () => {
             [(await example.object.getPromise()).arr[3][0], String],
             [arg, Object],
             [arg.key, String],
-            [example.getBody(), HTMLBodyElement]
+            [example.getBody(), HTMLBodyElement],
+            [example.getBlob(), Blob]
           ];
           return {
             protoMatches: protoChecks.map(([a, Constructor]) => Object.getPrototypeOf(a) === Constructor.prototype)
@@ -1164,4 +1219,32 @@ describe('contextBridge', () => {
 
   generateTests(true);
   generateTests(false);
+});
+
+describe('ContextBridgeMutability', () => {
+  it('should not make properties unwriteable and read-only if ContextBridgeMutability is on', async () => {
+    const appPath = path.join(fixturesPath, 'context-bridge-mutability');
+    const appProcess = cp.spawn(process.execPath, ['--enable-logging', '--enable-features=ContextBridgeMutability', appPath]);
+
+    let output = '';
+    appProcess.stdout.on('data', data => { output += data; });
+    await emittedOnce(appProcess, 'exit');
+
+    expect(output).to.include('some-modified-text');
+    expect(output).to.include('obj-modified-prop');
+    expect(output).to.include('1,2,5,3,4');
+  });
+
+  it('should make properties unwriteable and read-only if ContextBridgeMutability is off', async () => {
+    const appPath = path.join(fixturesPath, 'context-bridge-mutability');
+    const appProcess = cp.spawn(process.execPath, ['--enable-logging', appPath]);
+
+    let output = '';
+    appProcess.stdout.on('data', data => { output += data; });
+    await emittedOnce(appProcess, 'exit');
+
+    expect(output).to.include('some-text');
+    expect(output).to.include('obj-prop');
+    expect(output).to.include('1,2,3,4');
+  });
 });

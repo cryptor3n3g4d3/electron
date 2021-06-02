@@ -14,11 +14,11 @@ gclient_gn_args = [
 
 vars = {
   'chromium_version':
-    '1f252b391a40e2681b0d9aff6497b7401863d1fc',
+    '92.0.4511.0',
   'node_version':
-    'v14.16.0',
+    'v14.17.0',
   'nan_version':
-    '2c4ee8a32a299eada3cd6e468bbd0a473bfea96d',
+    'v2.14.2',
   'squirrel.mac_version':
     'cdc0729c8bf8576bfef18629186e1e9ecf1b0d9f',
 
@@ -47,6 +47,8 @@ vars = {
 
   # It's only needed to parse the native tests configurations.
   'checkout_pyyaml': False,
+
+  'use_rts': False,
 
   'mac_xcode_version': 'default',
 
@@ -86,7 +88,7 @@ deps = {
     'url': (Var("nodejs_git")) + '/node.git@' + (Var("node_version")),
     'condition': 'checkout_node and process_deps',
   },
-  'src/electron/vendor/pyyaml': {
+  'src/third_party/pyyaml': {
     'url': (Var("yaml_git")) + '/pyyaml.git@' + (Var("pyyaml_version")),
     'condition': 'checkout_pyyaml and process_deps',
   },

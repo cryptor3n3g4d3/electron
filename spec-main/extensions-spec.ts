@@ -6,7 +6,7 @@ import { AddressInfo } from 'net';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as WebSocket from 'ws';
-import { emittedOnce, emittedNTimes } from './events-helpers';
+import { emittedOnce, emittedNTimes, emittedUntil } from './events-helpers';
 
 const uuid = require('uuid');
 
@@ -57,8 +57,9 @@ describe('chrome extensions', () => {
     const w = new BrowserWindow({ show: false, webPreferences: { session: customSession, sandbox: true } });
     await w.loadURL('about:blank');
 
+    const promise = emittedOnce(app, 'web-contents-created');
     await customSession.loadExtension(path.join(fixtures, 'extensions', 'persistent-background-page'));
-    const args: any = await emittedOnce(app, 'web-contents-created');
+    const args: any = await promise;
     const wc: Electron.WebContents = args[1];
     await expect(wc.executeJavaScript(`
       (() => {
@@ -76,8 +77,9 @@ describe('chrome extensions', () => {
     const w = new BrowserWindow({ show: false, webPreferences: { session: customSession, sandbox: true } });
     await w.loadURL('about:blank');
 
+    const promise = emittedOnce(app, 'web-contents-created');
     await customSession.loadExtension(path.join(fixtures, 'extensions', 'persistent-background-page'));
-    const args: any = await emittedOnce(app, 'web-contents-created');
+    const args: any = await promise;
     const wc: Electron.WebContents = args[1];
     await expect(wc.executeJavaScript('(()=>{try{openDatabase("t", "1.0", "test", 2e5);return true;}catch(e){throw e}})()')).to.not.be.rejected();
   });
@@ -150,7 +152,9 @@ describe('chrome extensions', () => {
     const loadedPromise = emittedOnce(customSession, 'extension-loaded');
     const extension = await customSession.loadExtension(path.join(fixtures, 'extensions', 'red-bg'));
     const [, loadedExtension] = await loadedPromise;
-    const [, readyExtension] = await emittedOnce(customSession, 'extension-ready');
+    const [, readyExtension] = await emittedUntil(customSession, 'extension-ready', (event: Event, extension: Extension) => {
+      return extension.name !== 'Chromium PDF Viewer';
+    });
 
     expect(loadedExtension).to.deep.equal(extension);
     expect(readyExtension).to.deep.equal(extension);
@@ -427,19 +431,21 @@ describe('chrome extensions', () => {
 
     it('has session in background page', async () => {
       const customSession = session.fromPartition(`persist:${require('uuid').v4()}`);
+      const promise = emittedOnce(app, 'web-contents-created');
       await customSession.loadExtension(path.join(fixtures, 'extensions', 'persistent-background-page'));
       const w = new BrowserWindow({ show: false, webPreferences: { session: customSession } });
-      const promise = emittedOnce(app, 'web-contents-created');
       await w.loadURL('about:blank');
       const [, bgPageContents] = await promise;
+      expect(bgPageContents.getType()).to.equal('backgroundPage');
+      expect(bgPageContents.getURL()).to.match(/^chrome-extension:\/\/.+\/_generated_background_page.html$/);
       expect(bgPageContents.session).to.not.equal(undefined);
     });
 
     it('can open devtools of background page', async () => {
       const customSession = session.fromPartition(`persist:${require('uuid').v4()}`);
+      const promise = emittedOnce(app, 'web-contents-created');
       await customSession.loadExtension(path.join(fixtures, 'extensions', 'persistent-background-page'));
       const w = new BrowserWindow({ show: false, webPreferences: { session: customSession } });
-      const promise = emittedOnce(app, 'web-contents-created');
       await w.loadURL('about:blank');
       const [, bgPageContents] = await promise;
       expect(bgPageContents.getType()).to.equal('backgroundPage');

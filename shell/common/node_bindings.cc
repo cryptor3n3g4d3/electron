@@ -174,6 +174,8 @@ bool AllowWasmCodeGenerationCallback(v8::Local<v8::Context> context,
 void ErrorMessageListener(v8::Local<v8::Message> message,
                           v8::Local<v8::Value> data) {
   v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  gin_helper::MicrotasksScope microtasks_scope(
+      isolate, v8::MicrotasksScope::kDoNotRunMicrotasks);
   node::Environment* env = node::Environment::GetCurrent(isolate);
 
   if (env) {
@@ -214,7 +216,7 @@ void SetNodeCliFlags() {
 
   for (const auto& arg : argv) {
 #if defined(OS_WIN)
-    const auto& option = base::UTF16ToUTF8(arg);
+    const auto& option = base::WideToUTF8(arg);
 #else
     const auto& option = arg;
 #endif
@@ -363,21 +365,22 @@ void NodeBindings::Initialize() {
   // Parse and set Node.js cli flags.
   SetNodeCliFlags();
 
-  // pass non-null program name to argv so it doesn't crash
-  // trying to index into a nullptr
-  int argc = 1;
-  int exec_argc = 0;
-  const char* prog_name = "electron";
-  const char** argv = &prog_name;
-  const char** exec_argv = nullptr;
-
   std::unique_ptr<base::Environment> env(base::Environment::Create());
   SetNodeOptions(env.get());
 
-  // TODO(codebytere): this is going to be deprecated in the near future
-  // in favor of Init(std::vector<std::string>* argv,
-  //        std::vector<std::string>* exec_argv)
-  node::Init(&argc, argv, &exec_argc, &exec_argv);
+  std::vector<std::string> argv = {"electron"};
+  std::vector<std::string> exec_argv;
+  std::vector<std::string> errors;
+
+  int exit_code = node::InitializeNodeWithArgs(&argv, &exec_argv, &errors);
+
+  for (const std::string& error : errors) {
+    fprintf(stderr, "%s: %s\n", argv[0].c_str(), error.c_str());
+  }
+
+  if (exit_code != 0) {
+    exit(exit_code);
+  }
 
 #if defined(OS_WIN)
   // uv_init overrides error mode to suppress the default crash dialog, bring
@@ -441,8 +444,9 @@ node::Environment* NodeBindings::CreateEnvironment(
                      node::EnvironmentFlags::kNoRegisterESMLoader |
                      node::EnvironmentFlags::kNoInitializeInspector;
     v8::TryCatch try_catch(context->GetIsolate());
-    env = node::CreateEnvironment(isolate_data_, context, args, exec_args,
-                                  (node::EnvironmentFlags::Flags)flags);
+    env = node::CreateEnvironment(
+        isolate_data_, context, args, exec_args,
+        static_cast<node::EnvironmentFlags::Flags>(flags));
     DCHECK(env);
 
     // This will only be caught when something has gone terrible wrong as all
@@ -533,15 +537,13 @@ void NodeBindings::LoadEnvironment(node::Environment* env) {
 void NodeBindings::PrepareMessageLoop() {
 #if !defined(OS_WIN)
   int handle = uv_backend_fd(uv_loop_);
-#else
-  HANDLE handle = uv_loop_->iocp;
-#endif
 
   // If the backend fd hasn't changed, don't proceed.
   if (handle == handle_)
     return;
 
   handle_ = handle;
+#endif
 
   // Add dummy handle for libuv, otherwise libuv would quit when there is
   // nothing to do.
@@ -576,8 +578,13 @@ void NodeBindings::UvRunOnce() {
   // Enter node context while dealing with uv events.
   v8::Context::Scope context_scope(env->context());
 
-  // Perform microtask checkpoint after running JavaScript.
-  gin_helper::MicrotasksScope microtasks_scope(env->isolate());
+  // Node.js expects `kExplicit` microtasks policy and will run microtasks
+  // checkpoints after every call into JavaScript. Since we use a different
+  // policy in the renderer - switch to `kExplicit` and then drop back to the
+  // previous policy value.
+  auto old_policy = env->isolate()->GetMicrotasksPolicy();
+  DCHECK_EQ(v8::MicrotasksScope::GetCurrentDepth(env->isolate()), 0);
+  env->isolate()->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
 
   if (browser_env_ != BrowserEnvironment::kBrowser)
     TRACE_EVENT_BEGIN0("devtools.timeline", "FunctionCall");
@@ -587,6 +594,8 @@ void NodeBindings::UvRunOnce() {
 
   if (browser_env_ != BrowserEnvironment::kBrowser)
     TRACE_EVENT_END0("devtools.timeline", "FunctionCall");
+
+  env->isolate()->SetMicrotasksPolicy(old_policy);
 
   if (r == 0)
     base::RunLoop().QuitWhenIdle();  // Quit from uv.

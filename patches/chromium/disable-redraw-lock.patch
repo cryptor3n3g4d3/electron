@@ -15,10 +15,10 @@ the redraw locking mechanism, which fixes these issues. The electron issue
 can be found at https://github.com/electron/electron/issues/1821
 
 diff --git a/ui/views/win/hwnd_message_handler.cc b/ui/views/win/hwnd_message_handler.cc
-index c347d1610d4c3d6a6ee3c7cb17d49d54482de818..53a7c6d03146994f9af9a503646e65b5c884ab23 100644
+index 41363666bbbec7a92ac563282816f0a058979bc7..82ec517dbd675ad8b4a78848b7d2a7f71512c2d5 100644
 --- a/ui/views/win/hwnd_message_handler.cc
 +++ b/ui/views/win/hwnd_message_handler.cc
-@@ -304,6 +304,10 @@ constexpr int kSynthesizedMouseMessagesTimeDifference = 500;
+@@ -307,6 +307,10 @@ constexpr int kSynthesizedMouseMessagesTimeDifference = 500;
  
  }  // namespace
  
@@ -29,7 +29,7 @@ index c347d1610d4c3d6a6ee3c7cb17d49d54482de818..53a7c6d03146994f9af9a503646e65b5
  // A scoping class that prevents a window from being able to redraw in response
  // to invalidations that may occur within it for the lifetime of the object.
  //
-@@ -355,6 +359,7 @@ class HWNDMessageHandler::ScopedRedrawLock {
+@@ -358,6 +362,7 @@ class HWNDMessageHandler::ScopedRedrawLock {
          cancel_unlock_(false),
          should_lock_(owner_->IsVisible() && !owner->HasChildRenderingWindow() &&
                       ::IsWindow(hwnd_) &&
@@ -37,7 +37,7 @@ index c347d1610d4c3d6a6ee3c7cb17d49d54482de818..53a7c6d03146994f9af9a503646e65b5
                       (!(GetWindowLong(hwnd_, GWL_STYLE) & WS_CAPTION) ||
                        !ui::win::IsAeroGlassEnabled())) {
      if (should_lock_)
-@@ -969,6 +974,10 @@ HWNDMessageHandler::RegisterUnadjustedMouseEvent() {
+@@ -978,6 +983,10 @@ HWNDMessageHandler::RegisterUnadjustedMouseEvent() {
    return scoped_enable;
  }
  
@@ -49,7 +49,7 @@ index c347d1610d4c3d6a6ee3c7cb17d49d54482de818..53a7c6d03146994f9af9a503646e65b5
  // HWNDMessageHandler, gfx::WindowImpl overrides:
  
 diff --git a/ui/views/win/hwnd_message_handler.h b/ui/views/win/hwnd_message_handler.h
-index 042392a659fd6934e84d66cc985d25863e365e34..5e88e780c3da4805eae7870291188e636423042e 100644
+index a338ec40a4052a40304d7cf8c4e222f539412e68..6c109dde127bb04b33d18f030ffe4ec2a2e044c6 100644
 --- a/ui/views/win/hwnd_message_handler.h
 +++ b/ui/views/win/hwnd_message_handler.h
 @@ -202,6 +202,8 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,

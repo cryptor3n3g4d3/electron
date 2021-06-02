@@ -18,8 +18,6 @@ const features = process._linkedBinding('electron_common_features');
 
 const fixturesPath = path.resolve(__dirname, '..', 'spec', 'fixtures');
 
-const isAsan = process.env.IS_ASAN;
-
 describe('reporting api', () => {
   // TODO(nornagon): this started failing a lot on CI. Figure out why and fix
   // it.
@@ -289,6 +287,77 @@ describe('web security', () => {
     expect(response).to.equal('passed');
   });
 
+  describe('accessing file://', () => {
+    async function loadFile (w: BrowserWindow) {
+      const thisFile = url.format({
+        pathname: __filename.replace(/\\/g, '/'),
+        protocol: 'file',
+        slashes: true
+      });
+      await w.loadURL(`data:text/html,<script>
+          function loadFile() {
+            return new Promise((resolve) => {
+              fetch('${thisFile}').then(
+                () => resolve('loaded'),
+                () => resolve('failed')
+              )
+            });
+          }
+        </script>`);
+      return await w.webContents.executeJavaScript('loadFile()');
+    }
+
+    it('is forbidden when web security is enabled', async () => {
+      const w = new BrowserWindow({ show: false, webPreferences: { webSecurity: true } });
+      const result = await loadFile(w);
+      expect(result).to.equal('failed');
+    });
+
+    it('is allowed when web security is disabled', async () => {
+      const w = new BrowserWindow({ show: false, webPreferences: { webSecurity: false } });
+      const result = await loadFile(w);
+      expect(result).to.equal('loaded');
+    });
+  });
+
+  describe('wasm-eval csp', () => {
+    async function loadWasm (csp: string) {
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          sandbox: true,
+          enableBlinkFeatures: 'WebAssemblyCSP'
+        }
+      });
+      await w.loadURL(`data:text/html,<head>
+          <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' ${csp}">
+        </head>
+        <script>
+          function loadWasm() {
+            const wasmBin = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])
+            return new Promise((resolve) => {
+              WebAssembly.instantiate(wasmBin).then(() => {
+                resolve('loaded')
+              }).catch((error) => {
+                resolve(error.message)
+              })
+            });
+          }
+        </script>`);
+      return await w.webContents.executeJavaScript('loadWasm()');
+    }
+
+    it('wasm codegen is disallowed by default', async () => {
+      const r = await loadWasm('');
+      expect(r).to.equal('WebAssembly.instantiate(): Wasm code generation disallowed by embedder');
+    });
+
+    it('wasm codegen is allowed with "wasm-eval" csp', async () => {
+      const r = await loadWasm("'wasm-eval'");
+      expect(r).to.equal('loaded');
+    });
+  });
+
   it('does not crash when multiple WebContent are created with web security disabled', () => {
     const options = { show: false, webPreferences: { webSecurity: false } };
     const w1 = new BrowserWindow(options);
@@ -318,8 +387,14 @@ describe('command line switches', () => {
 
       let output = '';
       appProcess.stdout.on('data', (data) => { output += data; });
+      let stderr = '';
+      appProcess.stderr.on('data', (data) => { stderr += data; });
 
-      await emittedOnce(appProcess.stdout, 'end');
+      const [code, signal] = await emittedOnce(appProcess, 'exit');
+      if (code !== 0) {
+        throw new Error(`Process exited with code "${code}" signal "${signal}" output "${output}" stderr "${stderr}"`);
+      }
+
       output = output.replace(/(\r\n|\n|\r)/gm, '');
       expect(output).to.equal(result);
     };
@@ -332,14 +407,12 @@ describe('command line switches', () => {
       // The LC_ALL env should not be set to DOM locale string.
       expect(lcAll).to.not.equal(app.getLocale());
     });
-    // TODO(jeremy): figure out why this times out under ASan
-    ifit(process.platform === 'linux' && !process.env.IS_ASAN)('should not change LC_ALL', async () => testLocale('fr', lcAll, true));
+    ifit(process.platform === 'linux')('should not change LC_ALL', async () => testLocale('fr', lcAll, true));
     ifit(process.platform === 'linux')('should not change LC_ALL when setting invalid locale', async () => testLocale('asdfkl', lcAll, true));
     ifit(process.platform === 'linux')('should not change LC_ALL when --lang is not set', async () => testLocale('', lcAll, true));
   });
 
-  // TODO(nornagon): figure out why these tests fail under ASan.
-  ifdescribe(!isAsan)('--remote-debugging-pipe switch', () => {
+  describe('--remote-debugging-pipe switch', () => {
     it('should expose CDP via pipe', async () => {
       const electronPath = process.execPath;
       appProcess = ChildProcess.spawn(electronPath, ['--remote-debugging-pipe'], {
@@ -381,8 +454,7 @@ describe('command line switches', () => {
     });
   });
 
-  // TODO(nornagon): figure out why these tests fail under ASan.
-  ifdescribe(!isAsan)('--remote-debugging-port switch', () => {
+  describe('--remote-debugging-port switch', () => {
     it('should display the discovery page', (done) => {
       const electronPath = process.execPath;
       let output = '';
@@ -512,6 +584,43 @@ describe('chromium features', () => {
       });
       w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
       w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'index.html'));
+    });
+
+    it('should register for custom scheme', (done) => {
+      const customSession = session.fromPartition('custom-scheme');
+      const { serviceWorkerScheme } = global as any;
+      customSession.protocol.registerFileProtocol(serviceWorkerScheme, (request, callback) => {
+        let file = url.parse(request.url).pathname!;
+        if (file[0] === '/' && process.platform === 'win32') file = file.slice(1);
+
+        callback({ path: path.normalize(file) } as any);
+      });
+
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          session: customSession,
+          contextIsolation: false
+        }
+      });
+      w.webContents.on('ipc-message', (event, channel, message) => {
+        if (channel === 'reload') {
+          w.webContents.reload();
+        } else if (channel === 'error') {
+          done(`unexpected error : ${message}`);
+        } else if (channel === 'response') {
+          expect(message).to.equal('Hello from serviceWorker!');
+          customSession.clearStorageData({
+            storages: ['serviceworkers']
+          }).then(() => {
+            customSession.protocol.uninterceptProtocol(serviceWorkerScheme);
+            done();
+          });
+        }
+      });
+      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'custom-scheme-index.html'));
     });
 
     it('should not crash when nodeIntegration is enabled', (done) => {
@@ -672,7 +781,9 @@ describe('chromium features', () => {
     }
 
     it('disables node integration when it is disabled on the parent window for chrome devtools URLs', async () => {
-      const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true } });
+      // NB. webSecurity is disabled because native window.open() is not
+      // allowed to load devtools:// URLs.
+      const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, webSecurity: false } });
       w.loadURL('about:blank');
       w.webContents.executeJavaScript(`
         { b = window.open('devtools://devtools/bundled/inspector.html', '', 'nodeIntegration=no,show=no'); null }
@@ -683,8 +794,8 @@ describe('chromium features', () => {
     });
 
     it('disables JavaScript when it is disabled on the parent window', async () => {
-      const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true } });
-      w.webContents.loadURL('about:blank');
+      const w = new BrowserWindow({ show: true, webPreferences: { nodeIntegration: true } });
+      w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       const windowUrl = require('url').format({
         pathname: `${fixturesPath}/pages/window-no-javascript.html`,
         protocol: 'file',
@@ -711,7 +822,7 @@ describe('chromium features', () => {
         targetURL = `file://${fixturesPath}/pages/base-page.html`;
       }
       const w = new BrowserWindow({ show: false });
-      w.loadURL('about:blank');
+      w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       w.webContents.executeJavaScript(`{ b = window.open(${JSON.stringify(targetURL)}); null }`);
       const [, window] = await emittedOnce(app, 'browser-window-created');
       await emittedOnce(window.webContents, 'did-finish-load');
@@ -720,7 +831,7 @@ describe('chromium features', () => {
 
     it('defines a window.location setter', async () => {
       const w = new BrowserWindow({ show: false });
-      w.loadURL('about:blank');
+      w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       w.webContents.executeJavaScript('{ b = window.open("about:blank"); null }');
       const [, { webContents }] = await emittedOnce(app, 'browser-window-created');
       await emittedOnce(webContents, 'did-finish-load');
@@ -731,7 +842,7 @@ describe('chromium features', () => {
 
     it('defines a window.location.href setter', async () => {
       const w = new BrowserWindow({ show: false });
-      w.loadURL('about:blank');
+      w.webContents.loadFile(path.resolve(__dirname, 'fixtures', 'blank.html'));
       w.webContents.executeJavaScript('{ b = window.open("about:blank"); null }');
       const [, { webContents }] = await emittedOnce(app, 'browser-window-created');
       await emittedOnce(webContents, 'did-finish-load');
@@ -963,12 +1074,12 @@ describe('chromium features', () => {
           // We are testing whether context (3) can access context (2) under various conditions.
 
           // This is context (1), the base window for the test.
-          const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, webviewTag: true, contextIsolation: false } });
+          const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, webviewTag: true, contextIsolation: false, nativeWindowOpen: false } });
           await w.loadURL('about:blank');
 
           const parentCode = `new Promise((resolve) => {
             // This is context (3), a child window of the WebView.
-            const child = window.open(${JSON.stringify(child)}, "", "show=no")
+            const child = window.open(${JSON.stringify(child)}, "", "show=no,contextIsolation=no,nodeIntegration=yes")
             window.addEventListener("message", e => {
               resolve(e.data)
             })
@@ -1308,6 +1419,7 @@ describe('chromium features', () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL(pdfSource);
       const [, contents] = await emittedOnce(app, 'web-contents-created');
+      await emittedOnce(contents, 'did-navigate');
       expect(contents.getURL()).to.equal('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html');
     });
 
@@ -1315,6 +1427,7 @@ describe('chromium features', () => {
       const w = new BrowserWindow({ show: false });
       w.loadFile(path.join(__dirname, 'fixtures', 'pages', 'pdf-in-iframe.html'));
       const [, contents] = await emittedOnce(app, 'web-contents-created');
+      await emittedOnce(contents, 'did-navigate');
       expect(contents.getURL()).to.equal('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html');
     });
   });
@@ -1357,6 +1470,31 @@ describe('chromium features', () => {
       expect(pageExists).to.be.true();
     });
   });
+
+  describe('document.hasFocus', () => {
+    it('has correct value when multiple windows are opened', async () => {
+      const w1 = new BrowserWindow({ show: true });
+      const w2 = new BrowserWindow({ show: true });
+      const w3 = new BrowserWindow({ show: false });
+      await w1.loadFile(path.join(__dirname, 'fixtures', 'blank.html'));
+      await w2.loadFile(path.join(__dirname, 'fixtures', 'blank.html'));
+      await w3.loadFile(path.join(__dirname, 'fixtures', 'blank.html'));
+      expect(webContents.getFocusedWebContents().id).to.equal(w2.webContents.id);
+      let focus = false;
+      focus = await w1.webContents.executeJavaScript(
+        'document.hasFocus()'
+      );
+      expect(focus).to.be.false();
+      focus = await w2.webContents.executeJavaScript(
+        'document.hasFocus()'
+      );
+      expect(focus).to.be.true();
+      focus = await w3.webContents.executeJavaScript(
+        'document.hasFocus()'
+      );
+      expect(focus).to.be.false();
+    });
+  });
 });
 
 describe('font fallback', () => {
@@ -1380,7 +1518,13 @@ describe('font fallback', () => {
     const fonts = await getRenderedFonts(html);
     expect(fonts).to.be.an('array');
     expect(fonts).to.have.length(1);
-    if (process.platform === 'win32') { expect(fonts[0].familyName).to.equal('Arial'); } else if (process.platform === 'darwin') { expect(fonts[0].familyName).to.equal('Helvetica'); } else if (process.platform === 'linux') { expect(fonts[0].familyName).to.equal('DejaVu Sans'); } // I think this depends on the distro? We don't specify a default.
+    if (process.platform === 'win32') {
+      expect(fonts[0].familyName).to.equal('Arial');
+    } else if (process.platform === 'darwin') {
+      expect(fonts[0].familyName).to.equal('Helvetica');
+    } else if (process.platform === 'linux') {
+      expect(fonts[0].familyName).to.equal('DejaVu Sans');
+    } // I think this depends on the distro? We don't specify a default.
   });
 
   ifit(process.platform !== 'linux')('should fall back to Japanese font for sans-serif Japanese script', async function () {
@@ -1428,8 +1572,8 @@ describe('iframe using HTML fullscreen API while window is OS-fullscreened', () 
   });
 
   afterEach(async () => {
-    await closeAllWindows()
-    ;(w as any) = null;
+    await closeAllWindows();
+    (w as any) = null;
     server.close();
   });
 
@@ -1514,6 +1658,14 @@ describe('navigator.serial', () => {
     expect(port).to.equal('NotFoundError: No port selected by the user.');
   });
 
+  it('does not crash when select-serial-port is called with an invalid port', async () => {
+    w.webContents.session.on('select-serial-port', (event, portList, webContents, callback) => {
+      callback('i-do-not-exist');
+    });
+    const port = await getPorts();
+    expect(port).to.equal('NotFoundError: No port selected by the user.');
+  });
+
   it('returns a port when select-serial-port event is defined', async () => {
     w.webContents.session.on('select-serial-port', (event, portList, webContents, callback) => {
       callback(portList[0].portId);
@@ -1527,7 +1679,6 @@ describe('navigator.clipboard', () => {
   let w: BrowserWindow;
   before(async () => {
     w = new BrowserWindow({
-      show: false,
       webPreferences: {
         enableBlinkFeatures: 'Serial'
       }
@@ -1578,12 +1729,6 @@ describe('navigator.clipboard', () => {
 
 ifdescribe((process.platform !== 'linux' || app.isUnityRunning()))('navigator.setAppBadge/clearAppBadge', () => {
   let w: BrowserWindow;
-  before(async () => {
-    w = new BrowserWindow({
-      show: false
-    });
-    await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
-  });
 
   const expectedBadgeCount = 42;
 
@@ -1603,30 +1748,96 @@ ifdescribe((process.platform !== 'linux' || app.isUnityRunning()))('navigator.se
     return badgeCount;
   }
 
-  after(() => {
-    app.badgeCount = 0;
-    closeAllWindows();
+  describe('in the renderer', () => {
+    before(async () => {
+      w = new BrowserWindow({
+        show: false
+      });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'blank.html'));
+    });
+
+    after(() => {
+      app.badgeCount = 0;
+      closeAllWindows();
+    });
+
+    it('setAppBadge can set a numerical value', async () => {
+      const result = await fireAppBadgeAction('set', expectedBadgeCount);
+      expect(result).to.equal('success');
+      expect(waitForBadgeCount(expectedBadgeCount)).to.eventually.equal(expectedBadgeCount);
+    });
+
+    it('setAppBadge can set an empty(dot) value', async () => {
+      const result = await fireAppBadgeAction('set');
+      expect(result).to.equal('success');
+      expect(waitForBadgeCount(0)).to.eventually.equal(0);
+    });
+
+    it('clearAppBadge can clear a value', async () => {
+      let result = await fireAppBadgeAction('set', expectedBadgeCount);
+      expect(result).to.equal('success');
+      expect(waitForBadgeCount(expectedBadgeCount)).to.eventually.equal(expectedBadgeCount);
+      result = await fireAppBadgeAction('clear');
+      expect(result).to.equal('success');
+      expect(waitForBadgeCount(0)).to.eventually.equal(0);
+    });
   });
 
-  it('setAppBadge can set a numerical value', async () => {
-    const result = await fireAppBadgeAction('set', expectedBadgeCount);
-    expect(result).to.equal('success');
-    expect(waitForBadgeCount(expectedBadgeCount)).to.eventually.equal(expectedBadgeCount);
-  });
+  describe('in a service worker', () => {
+    beforeEach(async () => {
+      w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          partition: 'sw-file-scheme-spec',
+          contextIsolation: false
+        }
+      });
+    });
 
-  it('setAppBadge can set an empty(dot) value', async () => {
-    const result = await fireAppBadgeAction('set');
-    expect(result).to.equal('success');
-    expect(waitForBadgeCount(0)).to.eventually.equal(0);
-  });
+    afterEach(() => {
+      app.badgeCount = 0;
+      closeAllWindows();
+    });
 
-  it('clearAppBadge can clear a value', async () => {
-    let result = await fireAppBadgeAction('set', expectedBadgeCount);
-    expect(result).to.equal('success');
-    expect(waitForBadgeCount(expectedBadgeCount)).to.eventually.equal(expectedBadgeCount);
-    result = await fireAppBadgeAction('clear');
-    expect(result).to.equal('success');
-    expect(waitForBadgeCount(0)).to.eventually.equal(0);
+    it('setAppBadge can be called in a ServiceWorker', (done) => {
+      w.webContents.on('ipc-message', (event, channel, message) => {
+        if (channel === 'reload') {
+          w.webContents.reload();
+        } else if (channel === 'error') {
+          done(message);
+        } else if (channel === 'response') {
+          expect(message).to.equal('SUCCESS setting app badge');
+          expect(waitForBadgeCount(expectedBadgeCount)).to.eventually.equal(expectedBadgeCount);
+          session.fromPartition('sw-file-scheme-spec').clearStorageData({
+            storages: ['serviceworkers']
+          }).then(() => done());
+        }
+      });
+      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'badge-index.html'), { search: '?setBadge' });
+    });
+
+    it('clearAppBadge can be called in a ServiceWorker', (done) => {
+      w.webContents.on('ipc-message', (event, channel, message) => {
+        if (channel === 'reload') {
+          w.webContents.reload();
+        } else if (channel === 'setAppBadge') {
+          expect(message).to.equal('SUCCESS setting app badge');
+          expect(waitForBadgeCount(expectedBadgeCount)).to.eventually.equal(expectedBadgeCount);
+        } else if (channel === 'error') {
+          done(message);
+        } else if (channel === 'response') {
+          expect(message).to.equal('SUCCESS clearing app badge');
+          expect(waitForBadgeCount(expectedBadgeCount)).to.eventually.equal(expectedBadgeCount);
+          session.fromPartition('sw-file-scheme-spec').clearStorageData({
+            storages: ['serviceworkers']
+          }).then(() => done());
+        }
+      });
+      w.webContents.on('crashed', () => done(new Error('WebContents crashed.')));
+      w.loadFile(path.join(fixturesPath, 'pages', 'service-worker', 'badge-index.html'), { search: '?clearBadge' });
+    });
   });
 });
 

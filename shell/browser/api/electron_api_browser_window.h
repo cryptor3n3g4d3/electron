@@ -5,7 +5,6 @@
 #ifndef SHELL_BROWSER_API_ELECTRON_API_BROWSER_WINDOW_H_
 #define SHELL_BROWSER_API_ELECTRON_API_BROWSER_WINDOW_H_
 
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -48,12 +47,13 @@ class BrowserWindow : public BaseWindow,
   // content::WebContentsObserver:
   void RenderViewHostChanged(content::RenderViewHost* old_host,
                              content::RenderViewHost* new_host) override;
-  void RenderViewCreated(content::RenderViewHost* render_view_host) override;
+  void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
   void DidFirstVisuallyNonEmptyPaint() override;
   void BeforeUnloadDialogCancelled() override;
   void OnRendererUnresponsive(content::RenderProcessHost*) override;
   void OnRendererResponsive(
       content::RenderProcessHost* render_process_host) override;
+  void WebContentsDestroyed() override;
 
   // ExtendedWebContentsObserver:
   void OnCloseContents() override;
@@ -61,7 +61,7 @@ class BrowserWindow : public BaseWindow,
       const std::vector<mojom::DraggableRegionPtr>& regions) override;
   void OnSetContentBounds(const gfx::Rect& rect) override;
   void OnActivateContents() override;
-  void OnPageTitleUpdated(const base::string16& title,
+  void OnPageTitleUpdated(const std::u16string& title,
                           bool explicit_set) override;
 #if defined(OS_MAC)
   void OnDevToolsResized() override;
@@ -73,11 +73,11 @@ class BrowserWindow : public BaseWindow,
   void OnWindowIsKeyChanged(bool is_key) override;
 
   // BaseWindow:
-  void OnWindowClosed() override;
   void OnWindowBlur() override;
   void OnWindowFocus() override;
   void OnWindowResize() override;
   void OnWindowLeaveFullScreen() override;
+  void CloseImmediately() override;
   void Focus() override;
   void Blur() override;
   void SetBackgroundColor(const std::string& color_name) override;
@@ -114,12 +114,9 @@ class BrowserWindow : public BaseWindow,
   // Dispatch unresponsive event to observers.
   void NotifyWindowUnresponsive();
 
-  // Cleanup our WebContents observers.
-  void Cleanup();
-
   // Closure that would be called when window is unresponsive when closing,
   // it should be cancelled when we can prove that the window is responsive.
-  base::CancelableClosure window_unresponsive_closure_;
+  base::CancelableRepeatingClosure window_unresponsive_closure_;
 
 #if defined(OS_MAC)
   std::vector<mojom::DraggableRegionPtr> draggable_regions_;

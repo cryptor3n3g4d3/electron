@@ -3,10 +3,7 @@ import * as url from 'url';
 import { BrowserWindow, session, ipcMain, app, WebContents } from 'electron/main';
 import { closeAllWindows } from './window-helpers';
 import { emittedOnce, emittedUntil } from './events-helpers';
-import { ifdescribe } from './spec-helpers';
 import { expect } from 'chai';
-
-const features = process._linkedBinding('electron_common_features');
 
 async function loadWebView (w: WebContents, attributes: Record<string, string>, openDevTools: boolean = false): Promise<void> {
   await w.executeJavaScript(`
@@ -654,52 +651,6 @@ describe('<webview> tag', function () {
     });
   });
 
-  ifdescribe(features.isRemoteModuleEnabled())('enableremotemodule attribute', () => {
-    let w: BrowserWindow;
-    beforeEach(async () => {
-      w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, webviewTag: true } });
-      await w.loadURL('about:blank');
-    });
-    afterEach(closeAllWindows);
-
-    const generateSpecs = (description: string, sandbox: boolean) => {
-      describe(description, () => {
-        const preload = `file://${fixtures}/module/preload-disable-remote.js`;
-        const src = `file://${fixtures}/api/blank.html`;
-
-        it('enables the remote module by default', async () => {
-          loadWebView(w.webContents, {
-            preload,
-            src,
-            sandbox: sandbox.toString()
-          });
-          const [, webViewContents] = await emittedOnce(app, 'web-contents-created');
-          const [, , message] = await emittedUntil(webViewContents, 'console-message', (event: any, level: any, message: string) => !/deprecated/.test(message));
-
-          const typeOfRemote = JSON.parse(message);
-          expect(typeOfRemote).to.equal('object');
-        });
-
-        it('disables the remote module when false', async () => {
-          loadWebView(w.webContents, {
-            preload,
-            src,
-            sandbox: sandbox.toString(),
-            enableremotemodule: 'false'
-          });
-          const [, webViewContents] = await emittedOnce(app, 'web-contents-created');
-          const [, , message] = await emittedOnce(webViewContents, 'console-message');
-
-          const typeOfRemote = JSON.parse(message);
-          expect(typeOfRemote).to.equal('undefined');
-        });
-      });
-    };
-
-    generateSpecs('without sandbox', false);
-    generateSpecs('with sandbox', true);
-  });
-
   describe('DOM events', () => {
     afterEach(closeAllWindows);
     it('receives extra properties on DOM events when contextIsolation is enabled', async () => {
@@ -720,6 +671,28 @@ describe('<webview> tag', function () {
         document.body.appendChild(webview)
       })`);
       expect(message).to.equal('hi');
+    });
+
+    it('emits focus event when contextIsolation is enabled', async () => {
+      const w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          webviewTag: true,
+          contextIsolation: true
+        }
+      });
+      await w.loadURL('about:blank');
+      await w.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+        const webview = new WebView()
+        webview.setAttribute('src', 'about:blank')
+        webview.addEventListener('dom-ready', () => {
+          webview.focus()
+        })
+        webview.addEventListener('focus', () => {
+          resolve();
+        })
+        document.body.appendChild(webview)
+      })`);
     });
   });
 });

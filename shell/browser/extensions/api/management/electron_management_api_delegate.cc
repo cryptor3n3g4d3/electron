@@ -12,6 +12,7 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/strings/strcat.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/post_task.h"
 #include "chrome/common/extensions/extension_metrics.h"
@@ -204,7 +205,7 @@ bool ElectronManagementAPIDelegate::UninstallExtension(
     content::BrowserContext* context,
     const std::string& transient_extension_id,
     extensions::UninstallReason reason,
-    base::string16* error) const {
+    std::u16string* error) const {
   // TODO(sentialx): we don't have ExtensionService
   // return extensions::ExtensionSystem::Get(context)
   //     ->extension_service()

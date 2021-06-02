@@ -317,8 +317,9 @@ void NativeBrowserViewMac::UpdateDraggableRegions(
   const auto window_content_view_height = NSHeight(window_content_view.bounds);
   for (const auto& rect : drag_exclude_rects) {
     const auto x = rect.x() + offset.x();
-    const auto y = window_content_view_height - rect.bottom() + offset.y();
+    const auto y = window_content_view_height - (rect.bottom() + offset.y());
     const auto exclude_rect = NSMakeRect(x, y, rect.width(), rect.height());
+
     const auto drag_region_view_exclude_rect =
         [window_content_view convertRect:exclude_rect toView:drag_region_view];
 
@@ -346,9 +347,7 @@ void NativeBrowserViewMac::UpdateDraggableRegions(
 
   std::vector<gfx::Rect> drag_exclude_rects;
   if (draggable_regions_.empty()) {
-    const auto bounds = GetBounds();
-    drag_exclude_rects.emplace_back(bounds.x(), bounds.y(), webViewWidth,
-                                    webViewHeight);
+    drag_exclude_rects.emplace_back(0, 0, webViewWidth, webViewHeight);
   } else {
     drag_exclude_rects = CalculateNonDraggableRegions(
         DraggableRegionsToSkRegion(draggable_regions_), webViewWidth,

@@ -109,13 +109,7 @@ base::win::ScopedHICON ReadICOFromPath(int size, const base::FilePath& path) {
 
 NativeImage::NativeImage(v8::Isolate* isolate, const gfx::Image& image)
     : image_(image), isolate_(isolate) {
-  if (image_.HasRepresentation(gfx::Image::kImageRepSkia)) {
-    auto* const image_skia = image_.ToImageSkia();
-    if (!image_skia->isNull()) {
-      isolate_->AdjustAmountOfExternalAllocatedMemory(
-          image_skia->bitmap()->computeByteSize());
-    }
-  }
+  AdjustAmountOfExternalAllocatedMemory(true);
 }
 
 #if defined(OS_WIN)
@@ -125,21 +119,21 @@ NativeImage::NativeImage(v8::Isolate* isolate, const base::FilePath& hicon_path)
   gfx::ImageSkia image_skia;
   electron::util::ReadImageSkiaFromICO(&image_skia, GetHICON(256));
   image_ = gfx::Image(image_skia);
-  if (image_.HasRepresentation(gfx::Image::kImageRepSkia)) {
-    if (!image_skia.isNull()) {
-      isolate_->AdjustAmountOfExternalAllocatedMemory(
-          image_.ToImageSkia()->bitmap()->computeByteSize());
-    }
-  }
+
+  AdjustAmountOfExternalAllocatedMemory(true);
 }
 #endif
 
 NativeImage::~NativeImage() {
+  AdjustAmountOfExternalAllocatedMemory(false);
+}
+
+void NativeImage::AdjustAmountOfExternalAllocatedMemory(bool add) {
   if (image_.HasRepresentation(gfx::Image::kImageRepSkia)) {
     auto* const image_skia = image_.ToImageSkia();
     if (!image_skia->isNull()) {
-      isolate_->AdjustAmountOfExternalAllocatedMemory(
-          image_skia->bitmap()->computeByteSize());
+      int64_t size = image_skia->bitmap()->computeByteSize();
+      isolate_->AdjustAmountOfExternalAllocatedMemory(add ? size : -size);
     }
   }
 }
@@ -156,7 +150,7 @@ bool NativeImage::TryConvertNativeImage(v8::Isolate* isolate,
     *native_image = NativeImage::CreateFromPath(isolate, icon_path).get();
     if ((*native_image)->image().IsEmpty()) {
 #if defined(OS_WIN)
-      const auto img_path = base::UTF16ToUTF8(icon_path.value());
+      const auto img_path = base::WideToUTF8(icon_path.value());
 #else
       const auto img_path = icon_path.value();
 #endif

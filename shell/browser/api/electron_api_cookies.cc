@@ -4,7 +4,6 @@
 
 #include "shell/browser/api/electron_api_cookies.h"
 
-#include <memory>
 #include <utility>
 
 #include "base/time/time.h"
@@ -233,8 +232,7 @@ v8::Local<v8::Promise> Cookies::Get(v8::Isolate* isolate,
   gin_helper::Promise<net::CookieList> promise(isolate);
   v8::Local<v8::Promise> handle = promise.GetHandle();
 
-  auto* storage_partition =
-      content::BrowserContext::GetDefaultStoragePartition(browser_context_);
+  auto* storage_partition = browser_context_->GetDefaultStoragePartition();
   auto* manager = storage_partition->GetCookieManagerForBrowserProcess();
 
   base::DictionaryValue dict;
@@ -270,8 +268,7 @@ v8::Local<v8::Promise> Cookies::Remove(v8::Isolate* isolate,
   cookie_deletion_filter->url = url;
   cookie_deletion_filter->cookie_name = name;
 
-  auto* storage_partition =
-      content::BrowserContext::GetDefaultStoragePartition(browser_context_);
+  auto* storage_partition = browser_context_->GetDefaultStoragePartition();
   auto* manager = storage_partition->GetCookieManagerForBrowserProcess();
 
   manager->DeleteCookies(
@@ -339,8 +336,7 @@ v8::Local<v8::Promise> Cookies::Set(v8::Isolate* isolate,
   options.set_same_site_cookie_context(
       net::CookieOptions::SameSiteCookieContext::MakeInclusive());
 
-  auto* storage_partition =
-      content::BrowserContext::GetDefaultStoragePartition(browser_context_);
+  auto* storage_partition = browser_context_->GetDefaultStoragePartition();
   auto* manager = storage_partition->GetCookieManagerForBrowserProcess();
   manager->SetCanonicalCookie(
       *canonical_cookie, url, options,
@@ -361,8 +357,7 @@ v8::Local<v8::Promise> Cookies::FlushStore(v8::Isolate* isolate) {
   gin_helper::Promise<void> promise(isolate);
   v8::Local<v8::Promise> handle = promise.GetHandle();
 
-  auto* storage_partition =
-      content::BrowserContext::GetDefaultStoragePartition(browser_context_);
+  auto* storage_partition = browser_context_->GetDefaultStoragePartition();
   auto* manager = storage_partition->GetCookieManagerForBrowserProcess();
 
   manager->FlushCookieStore(base::BindOnce(

@@ -5,10 +5,8 @@
 #ifndef SHELL_BROWSER_BADGING_BADGE_MANAGER_H_
 #define SHELL_BROWSER_BADGING_BADGE_MANAGER_H_
 
-#include <map>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "base/macros.h"
 #include "base/optional.h"
@@ -37,6 +35,10 @@ class BadgeManager : public KeyedService, public blink::mojom::BadgeService {
   static void BindFrameReceiver(
       content::RenderFrameHost* frame,
       mojo::PendingReceiver<blink::mojom::BadgeService> receiver);
+  static void BindServiceWorkerReceiver(
+      content::RenderProcessHost* service_worker_process_host,
+      const GURL& service_worker_scope,
+      mojo::PendingReceiver<blink::mojom::BadgeService> receiver);
 
   // Determines the text to put on the badge based on some badge_content.
   static std::string GetBadgeString(base::Optional<int> badge_content);
@@ -64,6 +66,21 @@ class BadgeManager : public KeyedService, public blink::mojom::BadgeService {
    private:
     int process_id_;
     int frame_id_;
+  };
+
+  // The BindingContext for ServiceWorkerGlobalScope execution contexts.
+  class ServiceWorkerBindingContext final : public BindingContext {
+   public:
+    ServiceWorkerBindingContext(int process_id, const GURL& scope)
+        : process_id_(process_id), scope_(scope) {}
+    ~ServiceWorkerBindingContext() override = default;
+
+    int GetProcessId() { return process_id_; }
+    GURL GetScope() { return scope_; }
+
+   private:
+    int process_id_;
+    GURL scope_;
   };
 
   // blink::mojom::BadgeService:

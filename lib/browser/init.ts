@@ -2,6 +2,8 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import type * as defaultMenuModule from '@electron/internal/browser/default-menu';
+
 const Module = require('module');
 
 // We modified the original process.argv to let node.js load the init.js,
@@ -132,10 +134,6 @@ app._setDefaultAppPaths(packagePath);
 // Load the chrome devtools support.
 require('@electron/internal/browser/devtools');
 
-if (BUILDFLAG(ENABLE_REMOTE_MODULE)) {
-  require('@electron/internal/browser/remote/server');
-}
-
 // Load protocol module to ensure it is populated on app ready
 require('@electron/internal/browser/api/protocol');
 
@@ -176,7 +174,7 @@ app.on('window-all-closed', () => {
   }
 });
 
-const { setDefaultApplicationMenu } = require('@electron/internal/browser/default-menu');
+const { setDefaultApplicationMenu } = require('@electron/internal/browser/default-menu') as typeof defaultMenuModule;
 
 // Create default menu.
 //

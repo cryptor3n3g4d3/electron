@@ -197,9 +197,7 @@ be managed by using [ses.setPermissionCheckHandler(handler)](#sessetpermissionch
 with the `serial` permission.
 
 Because this is an experimental feature it is disabled by default.  To enable this feature, you
-will need to use the `--enable-features=ElectronSerialChooser` command line switch.  Additionally
-because this is an experimental Chromium feature you will need to set `enableBlinkFeatures: 'Serial'`
-on the `webPreferences` property when opening a BrowserWindow.
+will need to use the `--enable-features=ElectronSerialChooser` command line switch.
 
 ```javascript
 const { app, BrowserWindow } = require('electron')
@@ -210,10 +208,7 @@ app.commandLine.appendSwitch('enable-features', 'ElectronSerialChooser')
 app.whenReady().then(() => {
   win = new BrowserWindow({
     width: 800,
-    height: 600,
-    webPreferences: {
-      enableBlinkFeatures: 'Serial'
-    }
+    height: 600
   })
   win.webContents.session.on('select-serial-port', (event, portList, webContents, callback) => {
     event.preventDefault()
@@ -822,6 +817,11 @@ Returns `Extension[]` - A list of all loaded extensions.
 **Note:** This API cannot be called before the `ready` event of the `app` module
 is emitted.
 
+#### `ses.getStoragePath()`
+
+A `String | null` indicating the absolute file system path where data for this
+session is persisted on disk.  For in memory sessions this returns `null`.
+
 ### Instance Properties
 
 The following properties are available on instances of `Session`:
@@ -834,6 +834,11 @@ code to the `setSpellCheckerLanguages` API that isn't in this array will result 
 #### `ses.spellCheckerEnabled`
 
 A `Boolean` indicating whether builtin spell checker is enabled.
+
+#### `ses.storagePath` _Readonly_
+
+A `String | null` indicating the absolute file system path where data for this
+session is persisted on disk.  For in memory sessions this returns `null`.
 
 #### `ses.cookies` _Readonly_
 

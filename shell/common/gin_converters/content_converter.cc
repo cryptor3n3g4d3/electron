@@ -5,7 +5,6 @@
 #include "shell/common/gin_converters/content_converter.h"
 
 #include <string>
-#include <vector>
 
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/native_web_keyboard_event.h"
@@ -20,61 +19,6 @@
 #include "third_party/blink/public/common/context_menu_data/untrustworthy_context_menu_params.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
-
-namespace {
-
-void ExecuteCommand(content::WebContents* web_contents,
-                    int action,
-                    const blink::CustomContextMenuContext& context) {
-  web_contents->ExecuteCustomContextMenuCommand(action, context);
-}
-
-// Forward declaration for nested recursive call.
-v8::Local<v8::Value> MenuToV8(v8::Isolate* isolate,
-                              content::WebContents* web_contents,
-                              const blink::CustomContextMenuContext& context,
-                              const std::vector<blink::MenuItem>& menu);
-
-v8::Local<v8::Value> MenuItemToV8(
-    v8::Isolate* isolate,
-    content::WebContents* web_contents,
-    const blink::CustomContextMenuContext& context,
-    const blink::MenuItem& item) {
-  gin_helper::Dictionary v8_item = gin::Dictionary::CreateEmpty(isolate);
-  switch (item.type) {
-    case blink::MenuItem::CHECKABLE_OPTION:
-    case blink::MenuItem::GROUP:
-      v8_item.Set("checked", item.checked);
-      FALLTHROUGH;
-    case blink::MenuItem::OPTION:
-    case blink::MenuItem::SUBMENU:
-      v8_item.Set("label", item.label);
-      v8_item.Set("enabled", item.enabled);
-      FALLTHROUGH;
-    default:
-      v8_item.Set("type", item.type);
-  }
-  if (item.type == blink::MenuItem::SUBMENU)
-    v8_item.Set("submenu",
-                MenuToV8(isolate, web_contents, context, item.submenu));
-  else if (item.action > 0)
-    v8_item.Set("click", base::BindRepeating(ExecuteCommand, web_contents,
-                                             item.action, context));
-  return v8_item.GetHandle();
-}
-
-v8::Local<v8::Value> MenuToV8(v8::Isolate* isolate,
-                              content::WebContents* web_contents,
-                              const blink::CustomContextMenuContext& context,
-                              const std::vector<blink::MenuItem>& menu) {
-  std::vector<v8::Local<v8::Value>> v8_menu;
-  v8_menu.reserve(menu.size());
-  for (const auto& menu_item : menu)
-    v8_menu.push_back(MenuItemToV8(isolate, web_contents, context, menu_item));
-  return gin::ConvertToV8(isolate, v8_menu);
-}
-
-}  // namespace
 
 namespace gin {
 
@@ -110,19 +54,19 @@ struct Converter<ui::MenuSourceType> {
 };
 
 // static
-v8::Local<v8::Value> Converter<blink::MenuItem::Type>::ToV8(
+v8::Local<v8::Value> Converter<blink::mojom::MenuItem::Type>::ToV8(
     v8::Isolate* isolate,
-    const blink::MenuItem::Type& val) {
+    const blink::mojom::MenuItem::Type& val) {
   switch (val) {
-    case blink::MenuItem::CHECKABLE_OPTION:
+    case blink::mojom::MenuItem::Type::kCheckableOption:
       return StringToV8(isolate, "checkbox");
-    case blink::MenuItem::GROUP:
+    case blink::mojom::MenuItem::Type::kGroup:
       return StringToV8(isolate, "radio");
-    case blink::MenuItem::SEPARATOR:
+    case blink::mojom::MenuItem::Type::kSeparator:
       return StringToV8(isolate, "separator");
-    case blink::MenuItem::SUBMENU:
+    case blink::mojom::MenuItem::Type::kSubMenu:
       return StringToV8(isolate, "submenu");
-    case blink::MenuItem::OPTION:
+    case blink::mojom::MenuItem::Type::kOption:
     default:
       return StringToV8(isolate, "normal");
   }
@@ -166,9 +110,6 @@ v8::Local<v8::Value> Converter<ContextMenuParamsWithWebContents>::ToV8(
   dict.Set("inputFieldType", params.input_field_type);
   dict.Set("menuSourceType", params.source_type);
 
-  if (params.custom_context.is_pepper_menu)
-    dict.Set("menu", MenuToV8(isolate, val.second, params.custom_context,
-                              params.custom_items));
   return gin::ConvertToV8(isolate, dict);
 }
 
@@ -210,6 +151,8 @@ v8::Local<v8::Value> Converter<content::PermissionType>::ToV8(
       return StringToV8(isolate, "clipboard-read");
     case content::PermissionType::CLIPBOARD_SANITIZED_WRITE:
       return StringToV8(isolate, "clipboard-sanitized-write");
+    case content::PermissionType::FILE_HANDLING:
+      return StringToV8(isolate, "file-handling");
     case content::PermissionType::FONT_ACCESS:
       return StringToV8(isolate, "font-access");
     case content::PermissionType::IDLE_DETECTION:

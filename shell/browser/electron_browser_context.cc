@@ -32,12 +32,10 @@
 #include "content/public/browser/cors_origin_pattern_setter.h"
 #include "content/public/browser/shared_cors_origin_access_list.h"
 #include "content/public/browser/storage_partition.h"
-#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/escape.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/network_context.mojom.h"
-#include "shell/browser/api/electron_api_url_loader.h"
 #include "shell/browser/cookie_change_notifier.h"
 #include "shell/browser/electron_browser_client.h"
 #include "shell/browser/electron_browser_main_parts.h"
@@ -108,9 +106,7 @@ ElectronBrowserContext::ElectronBrowserContext(const std::string& partition,
     : storage_policy_(new SpecialStoragePolicy),
       protocol_registry_(new ProtocolRegistry),
       in_memory_(in_memory),
-      ssl_config_(network::mojom::SSLConfig::New()),
-      shared_cors_origin_access_list_(
-          content::SharedCorsOriginAccessList::Create()) {
+      ssl_config_(network::mojom::SSLConfig::New()) {
   user_agent_ = ElectronBrowserClient::Get()->GetUserAgent();
 
   // Read options.
@@ -285,7 +281,7 @@ ElectronBrowserContext::CreateZoomLevelDelegate(
 content::DownloadManagerDelegate*
 ElectronBrowserContext::GetDownloadManagerDelegate() {
   if (!download_manager_delegate_.get()) {
-    auto* download_manager = content::BrowserContext::GetDownloadManager(this);
+    auto* download_manager = this->GetDownloadManager();
     download_manager_delegate_ =
         std::make_unique<ElectronDownloadManagerDelegate>(download_manager);
   }
@@ -344,7 +340,6 @@ ElectronBrowserContext::GetURLLoaderFactory() {
   network::mojom::URLLoaderFactoryParamsPtr params =
       network::mojom::URLLoaderFactoryParams::New();
   params->header_client = std::move(header_client);
-  params->auth_client = auth_client_.BindNewPipeAndPassRemote();
   params->process_id = network::mojom::kBrowserProcessId;
   params->is_trusted = true;
   params->is_corb_enabled = false;
@@ -352,48 +347,15 @@ ElectronBrowserContext::GetURLLoaderFactory() {
   // the non-NetworkService implementation always has web security enabled.
   params->disable_web_security = false;
 
-  auto* storage_partition =
-      content::BrowserContext::GetDefaultStoragePartition(this);
+  auto* storage_partition = GetDefaultStoragePartition();
+  params->url_loader_network_observer =
+      storage_partition->CreateURLLoaderNetworkObserverForNavigationRequest(-1);
   storage_partition->GetNetworkContext()->CreateURLLoaderFactory(
       std::move(factory_receiver), std::move(params));
   url_loader_factory_ =
       base::MakeRefCounted<network::WrapperSharedURLLoaderFactory>(
           std::move(network_factory_remote));
   return url_loader_factory_;
-}
-
-class AuthResponder : public network::mojom::TrustedAuthClient {
- public:
-  AuthResponder() {}
-  ~AuthResponder() override = default;
-
- private:
-  void OnAuthRequired(
-      const base::Optional<::base::UnguessableToken>& window_id,
-      uint32_t process_id,
-      uint32_t routing_id,
-      uint32_t request_id,
-      const ::GURL& url,
-      bool first_auth_attempt,
-      const ::net::AuthChallengeInfo& auth_info,
-      ::network::mojom::URLResponseHeadPtr head,
-      mojo::PendingRemote<network::mojom::AuthChallengeResponder>
-          auth_challenge_responder) override {
-    api::SimpleURLLoaderWrapper* url_loader =
-        api::SimpleURLLoaderWrapper::FromID(routing_id);
-    if (url_loader) {
-      url_loader->OnAuthRequired(url, first_auth_attempt, auth_info,
-                                 std::move(head),
-                                 std::move(auth_challenge_responder));
-    }
-  }
-};
-
-void ElectronBrowserContext::OnLoaderCreated(
-    int32_t request_id,
-    mojo::PendingReceiver<network::mojom::TrustedAuthClient> auth_client) {
-  mojo::MakeSelfOwnedReceiver(std::make_unique<AuthResponder>(),
-                              std::move(auth_client));
 }
 
 content::PushMessagingService*
@@ -429,39 +391,6 @@ ElectronBrowserContext::GetClientHintsControllerDelegate() {
 content::StorageNotificationService*
 ElectronBrowserContext::GetStorageNotificationService() {
   return nullptr;
-}
-
-void ElectronBrowserContext::SetCorsOriginAccessListForOrigin(
-    const url::Origin& source_origin,
-    std::vector<network::mojom::CorsOriginPatternPtr> allow_patterns,
-    std::vector<network::mojom::CorsOriginPatternPtr> block_patterns,
-    base::OnceClosure closure) {
-  auto& context_map = ElectronBrowserContext::browser_context_map();
-  auto barrier_closure =
-      BarrierClosure(1 + context_map.size(), std::move(closure));
-
-  for (auto& iter : context_map) {
-    if (iter.second) {
-      auto bc_setter = base::MakeRefCounted<content::CorsOriginPatternSetter>(
-          source_origin,
-          content::CorsOriginPatternSetter::ClonePatterns(allow_patterns),
-          content::CorsOriginPatternSetter::ClonePatterns(block_patterns),
-          barrier_closure);
-      ForEachStoragePartition(
-          std::move(iter.second.get()),
-          base::BindRepeating(&content::CorsOriginPatternSetter::SetLists,
-                              base::RetainedRef(bc_setter.get())));
-    }
-  }
-
-  shared_cors_origin_access_list_->SetForOrigin(
-      source_origin, std::move(allow_patterns), std::move(block_patterns),
-      barrier_closure);
-}
-
-content::SharedCorsOriginAccessList*
-ElectronBrowserContext::GetSharedCorsOriginAccessList() {
-  return shared_cors_origin_access_list_.get();
 }
 
 ResolveProxyHelper* ElectronBrowserContext::GetResolveProxyHelper() {

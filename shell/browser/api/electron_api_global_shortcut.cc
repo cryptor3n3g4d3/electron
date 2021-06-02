@@ -4,7 +4,6 @@
 
 #include "shell/browser/api/electron_api_global_shortcut.h"
 
-#include <string>
 #include <vector>
 
 #include "base/stl_util.h"
@@ -73,7 +72,7 @@ void GlobalShortcut::OnKeyPressed(const ui::Accelerator& accelerator) {
 
 bool GlobalShortcut::RegisterAll(
     const std::vector<ui::Accelerator>& accelerators,
-    const base::Closure& callback) {
+    const base::RepeatingClosure& callback) {
   if (!electron::Browser::Get()->is_ready()) {
     gin_helper::ErrorThrower(JavascriptEnvironment::GetIsolate())
         .ThrowError("globalShortcut cannot be used before the app is ready");
@@ -94,7 +93,7 @@ bool GlobalShortcut::RegisterAll(
 }
 
 bool GlobalShortcut::Register(const ui::Accelerator& accelerator,
-                              const base::Closure& callback) {
+                              const base::RepeatingClosure& callback) {
   if (!electron::Browser::Get()->is_ready()) {
     gin_helper::ErrorThrower(JavascriptEnvironment::GetIsolate())
         .ThrowError("globalShortcut cannot be used before the app is ready");

@@ -9,11 +9,12 @@
 #include "base/command_line.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/extension_navigation_ui_data.h"
-#include "mojo/public/cpp/bindings/binding.h"
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/load_flags.h"
+#include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/cpp/features.h"
@@ -30,7 +31,8 @@ ProxyingURLLoaderFactory::InProgressRequest::FollowRedirectParams::
 ProxyingURLLoaderFactory::InProgressRequest::InProgressRequest(
     ProxyingURLLoaderFactory* factory,
     int64_t web_request_id,
-    int32_t routing_id,
+    int32_t view_routing_id,
+    int32_t frame_routing_id,
     int32_t network_service_request_id,
     uint32_t options,
     const network::ResourceRequest& request,
@@ -41,7 +43,8 @@ ProxyingURLLoaderFactory::InProgressRequest::InProgressRequest(
       request_(request),
       original_initiator_(request.request_initiator),
       request_id_(web_request_id),
-      routing_id_(routing_id),
+      view_routing_id_(view_routing_id),
+      frame_routing_id_(frame_routing_id),
       network_service_request_id_(network_service_request_id),
       options_(options),
       traffic_annotation_(traffic_annotation),
@@ -66,11 +69,13 @@ ProxyingURLLoaderFactory::InProgressRequest::InProgressRequest(
 ProxyingURLLoaderFactory::InProgressRequest::InProgressRequest(
     ProxyingURLLoaderFactory* factory,
     uint64_t request_id,
+    int32_t frame_routing_id,
     const network::ResourceRequest& request)
     : factory_(factory),
       request_(request),
       original_initiator_(request.request_initiator),
       request_id_(request_id),
+      frame_routing_id_(frame_routing_id),
       proxied_loader_receiver_(this),
       for_cors_preflight_(true),
       has_any_extra_headers_listeners_(true) {}
@@ -105,10 +110,10 @@ void ProxyingURLLoaderFactory::InProgressRequest::UpdateRequestInfo() {
   network::ResourceRequest request_for_info = request_;
   request_for_info.request_initiator = original_initiator_;
   info_.emplace(extensions::WebRequestInfoInitParams(
-      request_id_, factory_->render_process_id_, request_.render_frame_id,
+      request_id_, factory_->render_process_id_, frame_routing_id_,
       factory_->navigation_ui_data_ ? factory_->navigation_ui_data_->DeepCopy()
                                     : nullptr,
-      routing_id_, request_for_info, false,
+      view_routing_id_, request_for_info, false,
       !(options_ & network::mojom::kURLLoadOptionSynchronous),
       factory_->IsForServiceWorkerScript(), factory_->navigation_id_,
       ukm::kInvalidSourceIdObj));
@@ -241,6 +246,11 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveResponse(
   }
 }
 
+void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveEarlyHints(
+    network::mojom::EarlyHintsPtr early_hints) {
+  target_client_->OnReceiveEarlyHints(std::move(early_hints));
+}
+
 void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveRedirect(
     const net::RedirectInfo& redirect_info,
     network::mojom::URLResponseHeadPtr head) {
@@ -369,8 +379,8 @@ void ProxyingURLLoaderFactory::OnLoaderForCorsPreflightCreated(
   const uint64_t web_request_id = ++(*request_id_generator_);
 
   auto result = requests_.insert(std::make_pair(
-      web_request_id,
-      std::make_unique<InProgressRequest>(this, web_request_id, request)));
+      web_request_id, std::make_unique<InProgressRequest>(
+                          this, web_request_id, frame_routing_id_, request)));
 
   result.first->second->OnLoaderCreated(std::move(receiver));
   result.first->second->Restart();
@@ -509,9 +519,8 @@ void ProxyingURLLoaderFactory::InProgressRequest::ContinueToStartRequest(
     if (has_any_extra_headers_listeners_)
       options |= network::mojom::kURLLoadOptionUseHeaderClient;
     factory_->target_factory_->CreateLoaderAndStart(
-        mojo::MakeRequest(&target_loader_), routing_id_,
-        network_service_request_id_, options, request_,
-        proxied_client_receiver_.BindNewPipeAndPassRemote(),
+        mojo::MakeRequest(&target_loader_), network_service_request_id_,
+        options, request_, proxied_client_receiver_.BindNewPipeAndPassRemote(),
         traffic_annotation_);
   }
 
@@ -654,7 +663,7 @@ void ProxyingURLLoaderFactory::InProgressRequest::
   header_client_receiver_.reset();
   target_loader_.reset();
 
-  constexpr int kInternalRedirectStatusCode = 307;
+  constexpr int kInternalRedirectStatusCode = net::HTTP_TEMPORARY_REDIRECT;
 
   net::RedirectInfo redirect_info;
   redirect_info.status_code = kInternalRedirectStatusCode;
@@ -741,6 +750,8 @@ ProxyingURLLoaderFactory::ProxyingURLLoaderFactory(
     WebRequestAPI* web_request_api,
     const HandlersMap& intercepted_handlers,
     int render_process_id,
+    int frame_routing_id,
+    int view_routing_id,
     uint64_t* request_id_generator,
     std::unique_ptr<extensions::ExtensionNavigationUIData> navigation_ui_data,
     base::Optional<int64_t> navigation_id,
@@ -752,6 +763,8 @@ ProxyingURLLoaderFactory::ProxyingURLLoaderFactory(
     : web_request_api_(web_request_api),
       intercepted_handlers_(intercepted_handlers),
       render_process_id_(render_process_id),
+      frame_routing_id_(frame_routing_id),
+      view_routing_id_(view_routing_id),
       request_id_generator_(request_id_generator),
       navigation_ui_data_(std::move(navigation_ui_data)),
       navigation_id_(std::move(navigation_id)),
@@ -786,7 +799,6 @@ bool ProxyingURLLoaderFactory::ShouldIgnoreConnectionsLimit(
 
 void ProxyingURLLoaderFactory::CreateLoaderAndStart(
     mojo::PendingReceiver<network::mojom::URLLoader> loader,
-    int32_t routing_id,
     int32_t request_id,
     uint32_t options,
     const network::ResourceRequest& original_request,
@@ -808,11 +820,10 @@ void ProxyingURLLoaderFactory::CreateLoaderAndStart(
 
     // <scheme, <type, handler>>
     it->second.second.Run(
-        request,
-        base::BindOnce(&ElectronURLLoaderFactory::StartLoading,
-                       std::move(loader), routing_id, request_id, options,
-                       request, std::move(client), traffic_annotation,
-                       std::move(loader_remote), it->second.first));
+        request, base::BindOnce(&ElectronURLLoaderFactory::StartLoading,
+                                std::move(loader), request_id, options, request,
+                                std::move(client), traffic_annotation,
+                                std::move(loader_remote), it->second.first));
     return;
   }
 
@@ -828,9 +839,9 @@ void ProxyingURLLoaderFactory::CreateLoaderAndStart(
 
   if (!web_request_api()->HasListener()) {
     // Pass-through to the original factory.
-    target_factory_->CreateLoaderAndStart(
-        std::move(loader), routing_id, request_id, options, request,
-        std::move(client), traffic_annotation);
+    target_factory_->CreateLoaderAndStart(std::move(loader), request_id,
+                                          options, request, std::move(client),
+                                          traffic_annotation);
     return;
   }
 
@@ -850,8 +861,9 @@ void ProxyingURLLoaderFactory::CreateLoaderAndStart(
   auto result = requests_.emplace(
       web_request_id,
       std::make_unique<InProgressRequest>(
-          this, web_request_id, routing_id, request_id, options, request,
-          traffic_annotation, std::move(loader), std::move(client)));
+          this, web_request_id, view_routing_id_, frame_routing_id_, request_id,
+          options, request, traffic_annotation, std::move(loader),
+          std::move(client)));
   result.first->second->Restart();
 }
 

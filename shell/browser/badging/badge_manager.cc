@@ -4,7 +4,6 @@
 
 #include "shell/browser/badging/badge_manager.h"
 
-#include <tuple>
 #include <utility>
 
 #include "base/i18n/number_formatting.h"
@@ -42,6 +41,27 @@ void BadgeManager::BindFrameReceiver(
 
   auto context = std::make_unique<FrameBindingContext>(
       frame->GetProcess()->GetID(), frame->GetRoutingID());
+
+  badge_manager->receivers_.Add(badge_manager, std::move(receiver),
+                                std::move(context));
+}
+
+void BadgeManager::BindServiceWorkerReceiver(
+    content::RenderProcessHost* service_worker_process_host,
+    const GURL& service_worker_scope,
+    mojo::PendingReceiver<blink::mojom::BadgeService> receiver) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  auto* browser_context = service_worker_process_host->GetBrowserContext();
+
+  auto* badge_manager =
+      badging::BadgeManagerFactory::GetInstance()->GetForBrowserContext(
+          browser_context);
+  if (!badge_manager)
+    return;
+
+  auto context = std::make_unique<BadgeManager::ServiceWorkerBindingContext>(
+      service_worker_process_host->GetID(), service_worker_scope);
 
   badge_manager->receivers_.Add(badge_manager, std::move(receiver),
                                 std::move(context));

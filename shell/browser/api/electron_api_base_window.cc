@@ -114,8 +114,7 @@ BaseWindow::BaseWindow(gin_helper::Arguments* args,
 }
 
 BaseWindow::~BaseWindow() {
-  if (!window_->IsClosed())
-    window_->CloseImmediately();
+  CloseImmediately();
 
   // Destroy the native window in next tick because the native code might be
   // iterating all windows.
@@ -207,8 +206,15 @@ void BaseWindow::OnWindowRestore() {
 }
 
 void BaseWindow::OnWindowWillResize(const gfx::Rect& new_bounds,
+                                    const gfx::ResizeEdge& edge,
                                     bool* prevent_default) {
-  if (Emit("will-resize", new_bounds)) {
+  v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
+  v8::Locker locker(isolate);
+  v8::HandleScope handle_scope(isolate);
+  gin_helper::Dictionary info = gin::Dictionary::CreateEmpty(isolate);
+  info.Set("edge", edge);
+
+  if (Emit("will-resize", new_bounds, info)) {
     *prevent_default = true;
   }
 }
@@ -316,6 +322,11 @@ void BaseWindow::SetContentView(gin::Handle<View> view) {
   ResetBrowserViews();
   content_view_.Reset(isolate(), view.ToV8());
   window_->SetContentView(view->view());
+}
+
+void BaseWindow::CloseImmediately() {
+  if (!window_->IsClosed())
+    window_->CloseImmediately();
 }
 
 void BaseWindow::Close() {
@@ -690,6 +701,10 @@ void BaseWindow::SetContentProtection(bool enable) {
 
 void BaseWindow::SetFocusable(bool focusable) {
   return window_->SetFocusable(focusable);
+}
+
+bool BaseWindow::IsFocusable() {
+  return window_->IsFocusable();
 }
 
 void BaseWindow::SetMenu(v8::Isolate* isolate, v8::Local<v8::Value> value) {
@@ -1085,11 +1100,11 @@ bool BaseWindow::SetThumbnailToolTip(const std::string& tooltip) {
 }
 
 void BaseWindow::SetAppDetails(const gin_helper::Dictionary& options) {
-  base::string16 app_id;
+  std::wstring app_id;
   base::FilePath app_icon_path;
   int app_icon_index = 0;
-  base::string16 relaunch_command;
-  base::string16 relaunch_display_name;
+  std::wstring relaunch_command;
+  std::wstring relaunch_display_name;
 
   options.Get("appId", &app_id);
   options.Get("appIconPath", &app_icon_path);
@@ -1108,6 +1123,8 @@ int32_t BaseWindow::GetID() const {
 }
 
 void BaseWindow::ResetBrowserViews() {
+  v8::HandleScope scope(isolate());
+
   for (auto& item : browser_views_) {
     gin::Handle<BrowserView> browser_view;
     if (gin::ConvertFromV8(isolate(),
@@ -1237,6 +1254,7 @@ void BaseWindow::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("setIgnoreMouseEvents", &BaseWindow::SetIgnoreMouseEvents)
       .SetMethod("setContentProtection", &BaseWindow::SetContentProtection)
       .SetMethod("setFocusable", &BaseWindow::SetFocusable)
+      .SetMethod("isFocusable", &BaseWindow::IsFocusable)
       .SetMethod("setMenu", &BaseWindow::SetMenu)
       .SetMethod("removeMenu", &BaseWindow::RemoveMenu)
       .SetMethod("setParentWindow", &BaseWindow::SetParentWindow)

@@ -4,6 +4,7 @@
 
 #include "shell/browser/api/electron_api_net_log.h"
 
+#include <string>
 #include <utility>
 
 #include "base/command_line.h"
@@ -132,8 +133,7 @@ v8::Local<v8::Promise> NetLog::StartLogging(base::FilePath log_path,
           command_line_string, channel_string));
 
   auto* network_context =
-      content::BrowserContext::GetDefaultStoragePartition(browser_context_)
-          ->GetNetworkContext();
+      browser_context_->GetDefaultStoragePartition()->GetNetworkContext();
 
   network_context->CreateNetLogExporter(mojo::MakeRequest(&net_log_exporter_));
   net_log_exporter_.set_connection_error_handler(base::BindOnce(

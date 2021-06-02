@@ -6,16 +6,13 @@
 #define SHELL_BROWSER_NATIVE_WINDOW_H_
 
 #include <list>
-#include <map>
 #include <memory>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/optional.h"
-#include "base/strings/string16.h"
 #include "base/supports_user_data.h"
 #include "base/values.h"
 #include "content/public/browser/desktop_media_id.h"
@@ -35,6 +32,7 @@ class Image;
 class Point;
 class Rect;
 class RectF;
+enum class ResizeEdge;
 class Size;
 }  // namespace gfx
 
@@ -100,7 +98,7 @@ class NativeWindow : public base::SupportsUserData,
   virtual bool IsNormal();
   virtual gfx::Rect GetNormalBounds() = 0;
   virtual void SetSizeConstraints(
-      const extensions::SizeConstraints& size_constraints);
+      const extensions::SizeConstraints& window_constraints);
   virtual extensions::SizeConstraints GetSizeConstraints() const;
   virtual void SetContentSizeConstraints(
       const extensions::SizeConstraints& size_constraints);
@@ -136,6 +134,10 @@ class NativeWindow : public base::SupportsUserData,
   virtual void Invalidate() = 0;
   virtual void SetTitle(const std::string& title) = 0;
   virtual std::string GetTitle() = 0;
+#if defined(OS_MAC)
+  virtual void SetActive(bool is_key) = 0;
+  virtual bool IsActive() const = 0;
+#endif
 
   // Ability to augment the window title for the screen readers.
   void SetAccessibleTitle(const std::string& title);
@@ -163,6 +165,7 @@ class NativeWindow : public base::SupportsUserData,
   virtual void SetIgnoreMouseEvents(bool ignore, bool forward) = 0;
   virtual void SetContentProtection(bool enable) = 0;
   virtual void SetFocusable(bool focusable);
+  virtual bool IsFocusable();
   virtual void SetMenu(ElectronMenuModel* menu);
   virtual void SetParentWindow(NativeWindow* parent);
   virtual void AddBrowserView(NativeBrowserView* browser_view) = 0;
@@ -207,6 +210,7 @@ class NativeWindow : public base::SupportsUserData,
   virtual void SetTrafficLightPosition(base::Optional<gfx::Point> position) = 0;
   virtual base::Optional<gfx::Point> GetTrafficLightPosition() const = 0;
   virtual void RedrawTrafficLights() = 0;
+  virtual void UpdateFrame() = 0;
 #endif
 
   // Touchbar API
@@ -272,6 +276,7 @@ class NativeWindow : public base::SupportsUserData,
   void NotifyWindowRestore();
   void NotifyWindowMove();
   void NotifyWindowWillResize(const gfx::Rect& new_bounds,
+                              const gfx::ResizeEdge& edge,
                               bool* prevent_default);
   void NotifyWindowResize();
   void NotifyWindowResized();
@@ -325,7 +330,7 @@ class NativeWindow : public base::SupportsUserData,
   // views::WidgetDelegate:
   views::Widget* GetWidget() override;
   const views::Widget* GetWidget() const override;
-  base::string16 GetAccessibleWindowTitle() const override;
+  std::u16string GetAccessibleWindowTitle() const override;
 
   void set_content_view(views::View* view) { content_view_ = view; }
 
@@ -383,7 +388,7 @@ class NativeWindow : public base::SupportsUserData,
   base::ObserverList<NativeWindowObserver> observers_;
 
   // Accessible title.
-  base::string16 accessible_title_;
+  std::u16string accessible_title_;
 
   base::WeakPtrFactory<NativeWindow> weak_factory_{this};
 

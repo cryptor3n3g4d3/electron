@@ -1,10 +1,9 @@
-import { app, ipcMain, session, deprecate, webFrameMain } from 'electron/main';
-import type { BrowserWindowConstructorOptions, MenuItem, MenuItemConstructorOptions, LoadURLOptions } from 'electron/main';
+import { app, ipcMain, session, webFrameMain } from 'electron/main';
+import type { BrowserWindowConstructorOptions, LoadURLOptions } from 'electron/main';
 
 import * as url from 'url';
 import * as path from 'path';
-import { openGuestWindow, makeWebPreferences } from '@electron/internal/browser/guest-window-manager';
-import { NavigationController } from '@electron/internal/browser/navigation-controller';
+import { openGuestWindow, makeWebPreferences, parseContentTypeFormat } from '@electron/internal/browser/guest-window-manager';
 import { ipcMainInternal } from '@electron/internal/browser/ipc-main-internal';
 import * as ipcMainUtils from '@electron/internal/browser/ipc-main-internal-utils';
 import { MessagePortMain } from '@electron/internal/browser/message-port-main';
@@ -61,7 +60,7 @@ const PDFPageSizes: Record<string, ElectronInternal.MediaSize> = {
     width_microns: 279400,
     custom_display_name: 'Tabloid'
   }
-};
+} as const;
 
 // The minimum micron size Chromium accepts is that where:
 // Per printing/units.h:
@@ -94,6 +93,7 @@ const defaultPrintingSetting = {
   pagesPerSheet: 1,
   isFirstRequest: false,
   previewUIID: 0,
+  // True, if the document source is modifiable. e.g. HTML and not PDF.
   previewModifiable: true,
   printToPDF: true,
   deviceName: 'Save as PDF',
@@ -109,7 +109,7 @@ const defaultPrintingSetting = {
   printerType: 2,
   title: undefined as string | undefined,
   url: undefined as string | undefined
-};
+} as const;
 
 // JavaScript implementations of WebContents.
 const binding = process._linkedBinding('electron_browser_web_contents');
@@ -191,7 +191,7 @@ WebContents.prototype.executeJavaScriptInIsolatedWorld = async function (worldId
 
 let pendingPromise: Promise<any> | undefined;
 WebContents.prototype.printToPDF = async function (options) {
-  const printSettings = {
+  const printSettings: Record<string, any> = {
     ...defaultPrintingSetting,
     requestID: getNextId()
   };
@@ -406,15 +406,89 @@ WebContents.prototype.loadFile = function (filePath, options = {}) {
   }));
 };
 
+WebContents.prototype.loadURL = function (url, options) {
+  if (!options) {
+    options = {};
+  }
+
+  const p = new Promise<void>((resolve, reject) => {
+    const resolveAndCleanup = () => {
+      removeListeners();
+      resolve();
+    };
+    const rejectAndCleanup = (errorCode: number, errorDescription: string, url: string) => {
+      const err = new Error(`${errorDescription} (${errorCode}) loading '${typeof url === 'string' ? url.substr(0, 2048) : url}'`);
+      Object.assign(err, { errno: errorCode, code: errorDescription, url });
+      removeListeners();
+      reject(err);
+    };
+    const finishListener = () => {
+      resolveAndCleanup();
+    };
+    const failListener = (event: Electron.Event, errorCode: number, errorDescription: string, validatedURL: string, isMainFrame: boolean) => {
+      if (isMainFrame) {
+        rejectAndCleanup(errorCode, errorDescription, validatedURL);
+      }
+    };
+
+    let navigationStarted = false;
+    const navigationListener = (event: Electron.Event, url: string, isSameDocument: boolean, isMainFrame: boolean) => {
+      if (isMainFrame) {
+        if (navigationStarted && !isSameDocument) {
+          // the webcontents has started another unrelated navigation in the
+          // main frame (probably from the app calling `loadURL` again); reject
+          // the promise
+          // We should only consider the request aborted if the "navigation" is
+          // actually navigating and not simply transitioning URL state in the
+          // current context.  E.g. pushState and `location.hash` changes are
+          // considered navigation events but are triggered with isSameDocument.
+          // We can ignore these to allow virtual routing on page load as long
+          // as the routing does not leave the document
+          return rejectAndCleanup(-3, 'ERR_ABORTED', url);
+        }
+        navigationStarted = true;
+      }
+    };
+    const stopLoadingListener = () => {
+      // By the time we get here, either 'finish' or 'fail' should have fired
+      // if the navigation occurred. However, in some situations (e.g. when
+      // attempting to load a page with a bad scheme), loading will stop
+      // without emitting finish or fail. In this case, we reject the promise
+      // with a generic failure.
+      // TODO(jeremy): enumerate all the cases in which this can happen. If
+      // the only one is with a bad scheme, perhaps ERR_INVALID_ARGUMENT
+      // would be more appropriate.
+      rejectAndCleanup(-2, 'ERR_FAILED', url);
+    };
+    const removeListeners = () => {
+      this.removeListener('did-finish-load', finishListener);
+      this.removeListener('did-fail-load', failListener);
+      this.removeListener('did-start-navigation', navigationListener);
+      this.removeListener('did-stop-loading', stopLoadingListener);
+      this.removeListener('destroyed', stopLoadingListener);
+    };
+    this.on('did-finish-load', finishListener);
+    this.on('did-fail-load', failListener);
+    this.on('did-start-navigation', navigationListener);
+    this.on('did-stop-loading', stopLoadingListener);
+    this.on('destroyed', stopLoadingListener);
+  });
+  // Add a no-op rejection handler to silence the unhandled rejection error.
+  p.catch(() => {});
+  this._loadURL(url, options);
+  this.emit('load-url', url, options);
+  return p;
+};
+
 WebContents.prototype.setWindowOpenHandler = function (handler: (details: Electron.HandlerDetails) => ({action: 'allow'} | {action: 'deny', overrideBrowserWindowOptions?: BrowserWindowConstructorOptions})) {
   this._windowOpenHandler = handler;
 };
 
-WebContents.prototype._callWindowOpenHandler = function (event: Electron.Event, url: string, frameName: string, rawFeatures: string): BrowserWindowConstructorOptions | null {
+WebContents.prototype._callWindowOpenHandler = function (event: Electron.Event, details: Electron.HandlerDetails): BrowserWindowConstructorOptions | null {
   if (!this._windowOpenHandler) {
     return null;
   }
-  const response = this._windowOpenHandler({ url, frameName, features: rawFeatures });
+  const response = this._windowOpenHandler(details);
 
   if (typeof response !== 'object') {
     event.preventDefault();
@@ -432,7 +506,11 @@ WebContents.prototype._callWindowOpenHandler = function (event: Electron.Event, 
     event.preventDefault();
     return null;
   } else if (response.action === 'allow') {
-    if (typeof response.overrideBrowserWindowOptions === 'object' && response.overrideBrowserWindowOptions !== null) { return response.overrideBrowserWindowOptions; } else { return {}; }
+    if (typeof response.overrideBrowserWindowOptions === 'object' && response.overrideBrowserWindowOptions !== null) {
+      return response.overrideBrowserWindowOptions;
+    } else {
+      return {};
+    }
   } else {
     event.preventDefault();
     console.error('The window open handler response must be an object with an \'action\' property of \'allow\' or \'deny\'.');
@@ -470,24 +548,6 @@ const loggingEnabled = () => {
 
 // Add JavaScript wrappers for WebContents class.
 WebContents.prototype._init = function () {
-  // The navigation controller.
-  const navigationController = new NavigationController(this);
-  this.loadURL = navigationController.loadURL.bind(navigationController);
-  this.getURL = navigationController.getURL.bind(navigationController);
-  this.stop = navigationController.stop.bind(navigationController);
-  this.reload = navigationController.reload.bind(navigationController);
-  this.reloadIgnoringCache = navigationController.reloadIgnoringCache.bind(navigationController);
-  this.canGoBack = navigationController.canGoBack.bind(navigationController);
-  this.canGoForward = navigationController.canGoForward.bind(navigationController);
-  this.canGoToIndex = navigationController.canGoToIndex.bind(navigationController);
-  this.canGoToOffset = navigationController.canGoToOffset.bind(navigationController);
-  this.clearHistory = navigationController.clearHistory.bind(navigationController);
-  this.goBack = navigationController.goBack.bind(navigationController);
-  this.goForward = navigationController.goForward.bind(navigationController);
-  this.goToIndex = navigationController.goToIndex.bind(navigationController);
-  this.goToOffset = navigationController.goToOffset.bind(navigationController);
-  this.getActiveIndex = navigationController.getActiveIndex.bind(navigationController);
-  this.length = navigationController.length.bind(navigationController);
   // Read off the ID at construction time, so that it's accessible even after
   // the underlying C++ WebContents is destroyed.
   const id = this.id;
@@ -497,10 +557,6 @@ WebContents.prototype._init = function () {
   });
 
   this._windowOpenHandler = null;
-
-  // Every remote callback from renderer process would add a listener to the
-  // render-view-deleted event, so ignore the listeners warning.
-  this.setMaxListeners(0);
 
   // Dispatch IPC messages to the ipc module.
   this.on('-ipc-message' as any, function (this: Electron.WebContents, event: Electron.IpcMainEvent, internal: boolean, channel: string, args: any[]) {
@@ -546,18 +602,6 @@ WebContents.prototype._init = function () {
     ipcMain.emit(channel, event, message);
   });
 
-  // Handle context menu action request from pepper plugin.
-  this.on('pepper-context-menu' as any, function (event: ElectronInternal.Event, params: {x: number, y: number, menu: Array<(MenuItemConstructorOptions) | (MenuItem)>}, callback: () => void) {
-    // Access Menu via electron.Menu to prevent circular require.
-    const menu = require('electron').Menu.buildFromTemplate(params.menu);
-    menu.popup({
-      window: event.sender.getOwnerBrowserWindow(),
-      x: params.x,
-      y: params.y,
-      callback
-    });
-  });
-
   this.on('crashed', (event, ...args) => {
     app.emit('renderer-process-crashed', event, this, ...args);
   });
@@ -578,32 +622,56 @@ WebContents.prototype._init = function () {
 
   if (this.getType() !== 'remote') {
     // Make new windows requested by links behave like "window.open".
-    this.on('-new-window' as any, (event: ElectronInternal.Event, url: string, frameName: string, disposition: string,
+    this.on('-new-window' as any, (event: ElectronInternal.Event, url: string, frameName: string, disposition: Electron.HandlerDetails['disposition'],
       rawFeatures: string, referrer: Electron.Referrer, postData: PostData) => {
-      openGuestWindow({
-        event,
-        embedder: event.sender,
-        disposition,
+      const postBody = postData ? {
+        data: postData,
+        ...parseContentTypeFormat(postData)
+      } : undefined;
+      const details: Electron.HandlerDetails = {
+        url,
+        frameName,
+        features: rawFeatures,
         referrer,
-        postData,
-        overrideBrowserWindowOptions: {},
-        windowOpenArgs: {
-          url,
-          frameName,
-          features: rawFeatures
-        }
-      });
+        postBody,
+        disposition
+      };
+      const options = this._callWindowOpenHandler(event, details);
+      if (!event.defaultPrevented) {
+        openGuestWindow({
+          event,
+          embedder: event.sender,
+          disposition,
+          referrer,
+          postData,
+          overrideBrowserWindowOptions: options || {},
+          windowOpenArgs: details
+        });
+      }
     });
 
     let windowOpenOverriddenOptions: BrowserWindowConstructorOptions | null = null;
-    this.on('-will-add-new-contents' as any, (event: ElectronInternal.Event, url: string, frameName: string, rawFeatures: string) => {
-      windowOpenOverriddenOptions = this._callWindowOpenHandler(event, url, frameName, rawFeatures);
+    this.on('-will-add-new-contents' as any, (event: ElectronInternal.Event, url: string, frameName: string, rawFeatures: string, disposition: Electron.HandlerDetails['disposition'], referrer: Electron.Referrer, postData: PostData) => {
+      const postBody = postData ? {
+        data: postData,
+        ...parseContentTypeFormat(postData)
+      } : undefined;
+      const details: Electron.HandlerDetails = {
+        url,
+        frameName,
+        features: rawFeatures,
+        disposition,
+        referrer,
+        postBody
+      };
+      windowOpenOverriddenOptions = this._callWindowOpenHandler(event, details);
       if (!event.defaultPrevented) {
         const secureOverrideWebPreferences = windowOpenOverriddenOptions ? {
           // Allow setting of backgroundColor as a webPreference even though
           // it's technically a BrowserWindowConstructorOptions option because
           // we need to access it in the renderer at init time.
           backgroundColor: windowOpenOverriddenOptions.backgroundColor,
+          transparent: windowOpenOverriddenOptions.transparent,
           ...windowOpenOverriddenOptions.webPreferences
         } : undefined;
         this._setNextChildWebPreferences(
@@ -641,11 +709,6 @@ WebContents.prototype._init = function () {
         }
       });
     });
-
-    const prefs = this.getWebPreferences() || {};
-    if (prefs.webviewTag && prefs.contextIsolation) {
-      deprecate.log('Security Warning: A WebContents was just created with both webviewTag and contextIsolation enabled.  This combination is fundamentally less secure and effectively bypasses the protections of contextIsolation.  We strongly recommend you move away from webviews to OOPIF or BrowserView in order for your app to be more secure');
-    }
   }
 
   this.on('login', (event, ...args) => {

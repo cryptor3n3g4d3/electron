@@ -121,9 +121,6 @@ const char kNodeIntegration[] = "nodeIntegration";
 // Enable context isolation of Electron APIs and preload script
 const char kContextIsolation[] = "contextIsolation";
 
-// Enable world safe passing of values when using "executeJavaScript"
-const char kWorldSafeExecuteJavaScript[] = "worldSafeExecuteJavaScript";
-
 // Instance ID of guest WebContents.
 const char kGuestInstanceID[] = "guestInstanceId";
 
@@ -184,17 +181,10 @@ const char kWebGL[] = "webgl";
 // navigation.
 const char kNavigateOnDragDrop[] = "navigateOnDragDrop";
 
-const char kDisableElectronSiteInstanceOverrides[] =
-    "disableElectronSiteInstanceOverrides";
-const char kEnableNodeLeakageInRenderers[] = "enableNodeLeakageInRenderers";
 const char kHiddenPage[] = "hiddenPage";
 
 #if BUILDFLAG(ENABLE_BUILTIN_SPELLCHECKER)
 const char kSpellcheck[] = "spellcheck";
-#endif
-
-#if BUILDFLAG(ENABLE_REMOTE_MODULE)
-const char kEnableRemoteModule[] = "enableRemoteModule";
 #endif
 
 const char kEnableWebSQL[] = "enableWebSQL";

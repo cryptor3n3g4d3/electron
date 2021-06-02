@@ -10,7 +10,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include "shell/common/api/api.mojom.h"
@@ -33,6 +32,10 @@ class WindowStateWatcher;
 
 #if defined(USE_X11)
 class EventDisabler;
+#endif
+
+#if defined(OS_WIN)
+gfx::Rect ScreenToDIPRect(HWND hwnd, const gfx::Rect& pixel_bounds);
 #endif
 
 class NativeWindowViews : public NativeWindow,
@@ -112,6 +115,7 @@ class NativeWindowViews : public NativeWindow,
   void SetIgnoreMouseEvents(bool ignore, bool forward) override;
   void SetContentProtection(bool enable) override;
   void SetFocusable(bool focusable) override;
+  bool IsFocusable() override;
   void SetMenu(ElectronMenuModel* menu_model) override;
   void AddBrowserView(NativeBrowserView* browser_view) override;
   void RemoveBrowserView(NativeBrowserView* browser_view) override;
@@ -184,7 +188,7 @@ class NativeWindowViews : public NativeWindow,
   bool CanResize() const override;
   bool CanMaximize() const override;
   bool CanMinimize() const override;
-  base::string16 GetWindowTitle() const override;
+  std::u16string GetWindowTitle() const override;
   views::View* GetContentsView() override;
   bool ShouldDescendIntoChildForEventHandling(
       gfx::NativeView child,
@@ -220,10 +224,8 @@ class NativeWindowViews : public NativeWindow,
       content::WebContents*,
       const content::NativeWebKeyboardEvent& event) override;
 
-#if defined(OS_LINUX)
   // ui::EventHandler:
   void OnMouseEvent(ui::MouseEvent* event) override;
-#endif
 
   // Returns the restore state for the window.
   ui::WindowShowState GetRestoredState();

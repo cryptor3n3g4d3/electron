@@ -5,7 +5,7 @@
 #include "shell/browser/electron_browser_main_parts.h"
 
 #include <memory>
-
+#include <string>
 #include <utility>
 
 #include "base/base_switches.h"
@@ -17,6 +17,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/icon_manager.h"
+#include "components/os_crypt/os_crypt.h"
+#include "content/browser/browser_main_loop.h"  // nogncheck
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/device_service.h"
@@ -25,6 +27,7 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/common/result_codes.h"
 #include "electron/buildflags/buildflags.h"
+#include "electron/fuses.h"
 #include "media/base/localized_strings.h"
 #include "services/network/public/cpp/features.h"
 #include "services/tracing/public/cpp/stack_sampling/tracing_sampler_profiler.h"
@@ -61,8 +64,7 @@
 #include "base/environment.h"
 #include "base/nix/xdg_util.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "ui/gtk/gtk_ui.h"
-#include "ui/gtk/gtk_ui_delegate.h"
+#include "ui/gtk/gtk_ui_factory.h"
 #include "ui/gtk/gtk_util.h"
 #include "ui/views/linux_ui/linux_ui.h"
 
@@ -76,7 +78,6 @@
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/xproto_util.h"
-#include "ui/gtk/x/gtk_ui_delegate_x11.h"
 #endif
 
 #if defined(USE_OZONE) || defined(USE_X11)
@@ -86,7 +87,6 @@
 #endif
 
 #if defined(OS_WIN)
-#include "ui/base/cursor/cursor_loader_win.h"
 #include "ui/base/l10n/l10n_util_win.h"
 #include "ui/display/win/dpi.h"
 #include "ui/gfx/system_fonts_win.h"
@@ -142,16 +142,16 @@ int GetMinimumFontSize() {
 }
 #endif
 
-base::string16 MediaStringProvider(media::MessageId id) {
+std::u16string MediaStringProvider(media::MessageId id) {
   switch (id) {
     case media::DEFAULT_AUDIO_DEVICE_NAME:
-      return base::ASCIIToUTF16("Default");
+      return u"Default";
 #if defined(OS_WIN)
     case media::COMMUNICATIONS_AUDIO_DEVICE_NAME:
-      return base::ASCIIToUTF16("Communications");
+      return u"Communications";
 #endif
     default:
-      return base::string16();
+      return std::u16string();
   }
 }
 
@@ -223,12 +223,13 @@ bool ElectronBrowserMainParts::SetExitCode(int code) {
   if (!exit_code_)
     return false;
 
+  content::BrowserMainLoop::GetInstance()->SetResultCode(code);
   *exit_code_ = code;
   return true;
 }
 
-int ElectronBrowserMainParts::GetExitCode() {
-  return exit_code_ != nullptr ? *exit_code_ : 0;
+int ElectronBrowserMainParts::GetExitCode() const {
+  return exit_code_.value_or(content::RESULT_CODE_NORMAL_EXIT);
 }
 
 int ElectronBrowserMainParts::PreEarlyInitialization() {
@@ -241,7 +242,7 @@ int ElectronBrowserMainParts::PreEarlyInitialization() {
   HandleSIGCHLD();
 #endif
 
-  return content::RESULT_CODE_NORMAL_EXIT;
+  return GetExitCode();
 }
 
 void ElectronBrowserMainParts::PostEarlyInitialization() {
@@ -279,14 +280,17 @@ void ElectronBrowserMainParts::PostEarlyInitialization() {
   base::FeatureList::ClearInstanceForTesting();
   InitializeFeatureList();
 
+  // Initialize field trials.
+  InitializeFieldTrials();
+
   // Initialize after user script environment creation.
   fake_browser_process_->PostEarlyInitialization();
 }
 
 int ElectronBrowserMainParts::PreCreateThreads() {
 #if defined(USE_AURA)
-  display::Screen* screen = views::CreateDesktopScreen();
-  display::Screen::SetScreenInstance(screen);
+  screen_ = views::CreateDesktopScreen();
+  display::Screen::SetScreenInstance(screen_.get());
 #if defined(OS_LINUX)
   views::LinuxUI::instance()->UpdateDeviceScaleFactor();
 #endif
@@ -374,17 +378,8 @@ void ElectronBrowserMainParts::PostDestroyThreads() {
 }
 
 void ElectronBrowserMainParts::ToolkitInitialized() {
-#if defined(USE_X11)
-  if (!features::IsUsingOzonePlatform()) {
-    // In Aura/X11, Gtk-based LinuxUI implementation is used.
-    gtk_ui_delegate_ =
-        std::make_unique<ui::GtkUiDelegateX11>(x11::Connection::Get());
-    ui::GtkUiDelegate::SetInstance(gtk_ui_delegate_.get());
-  }
-#endif
 #if defined(OS_LINUX)
-  views::LinuxUI* linux_ui = BuildGtkUi(ui::GtkUiDelegate::instance());
-  views::LinuxUI::SetInstance(linux_ui);
+  auto linux_ui = BuildGtkUi();
   linux_ui->Initialize();
 
   // Chromium does not respect GTK dark theme setting, but they may change
@@ -396,6 +391,7 @@ void ElectronBrowserMainParts::ToolkitInitialized() {
   // here returns a NativeThemeGtk, which monitors GTK settings.
   dark_theme_observer_.reset(new DarkThemeObserver);
   linux_ui->GetNativeTheme(nullptr)->AddObserver(dark_theme_observer_.get());
+  views::LinuxUI::SetInstance(std::move(linux_ui));
 #endif
 
 #if defined(USE_AURA)
@@ -405,10 +401,6 @@ void ElectronBrowserMainParts::ToolkitInitialized() {
 #if defined(OS_WIN)
   gfx::win::SetAdjustFontCallback(&AdjustUIFont);
   gfx::win::SetGetMinimumFontSizeCallback(&GetMinimumFontSize);
-
-  wchar_t module_name[MAX_PATH] = {0};
-  if (GetModuleFileName(NULL, module_name, base::size(module_name)))
-    ui::CursorLoaderWin::SetCursorResourceModule(module_name);
 #endif
 
 #if defined(OS_MAC)
@@ -418,7 +410,7 @@ void ElectronBrowserMainParts::ToolkitInitialized() {
 #endif
 }
 
-void ElectronBrowserMainParts::PreMainMessageLoopRun() {
+int ElectronBrowserMainParts::PreMainMessageLoopRun() {
   // Run user's main script before most things get initialized, so we can have
   // a chance to setup everything.
   node_bindings_->PrepareMessageLoop();
@@ -474,25 +466,23 @@ void ElectronBrowserMainParts::PreMainMessageLoopRun() {
 
   // Notify observers that main thread message loop was initialized.
   Browser::Get()->PreMainMessageLoopRun();
+
+  return GetExitCode();
 }
 
-bool ElectronBrowserMainParts::MainMessageLoopRun(int* result_code) {
+void ElectronBrowserMainParts::WillRunMainMessageLoop(
+    std::unique_ptr<base::RunLoop>& run_loop) {
   js_env_->OnMessageLoopCreated();
-  exit_code_ = result_code;
-  return content::BrowserMainParts::MainMessageLoopRun(result_code);
+  exit_code_ = content::RESULT_CODE_NORMAL_EXIT;
+  Browser::Get()->SetMainMessageLoopQuitClosure(run_loop->QuitClosure());
 }
 
-void ElectronBrowserMainParts::PreDefaultMainMessageLoopRun(
-    base::OnceClosure quit_closure) {
-  Browser::Get()->SetMainMessageLoopQuitClosure(std::move(quit_closure));
-}
-
-void ElectronBrowserMainParts::PostMainMessageLoopStart() {
+void ElectronBrowserMainParts::PostCreateMainMessageLoop() {
 #if defined(USE_OZONE)
   if (features::IsUsingOzonePlatform()) {
     auto shutdown_cb =
         base::BindOnce(base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
-    ui::OzonePlatform::GetInstance()->PostMainMessageLoopStart(
+    ui::OzonePlatform::GetInstance()->PostCreateMainMessageLoop(
         std::move(shutdown_cb));
   }
 #endif
@@ -515,8 +505,7 @@ void ElectronBrowserMainParts::PostMainMessageLoopRun() {
   // Shutdown the DownloadManager before destroying Node to prevent
   // DownloadItem callbacks from crashing.
   for (auto& iter : ElectronBrowserContext::browser_context_map()) {
-    auto* download_manager =
-        content::BrowserContext::GetDownloadManager(iter.second.get());
+    auto* download_manager = iter.second.get()->GetDownloadManager();
     if (download_manager) {
       download_manager->Shutdown();
     }
@@ -540,17 +529,27 @@ void ElectronBrowserMainParts::PostMainMessageLoopRun() {
 }
 
 #if !defined(OS_MAC)
-void ElectronBrowserMainParts::PreMainMessageLoopStart() {
-  PreMainMessageLoopStartCommon();
+void ElectronBrowserMainParts::PreCreateMainMessageLoop() {
+  PreCreateMainMessageLoopCommon();
 }
 #endif
 
-void ElectronBrowserMainParts::PreMainMessageLoopStartCommon() {
+void ElectronBrowserMainParts::PreCreateMainMessageLoopCommon() {
 #if defined(OS_MAC)
   InitializeMainNib();
   RegisterURLHandler();
 #endif
   media::SetLocalizedStringProvider(MediaStringProvider);
+
+#if defined(OS_WIN)
+  if (electron::fuses::IsCookieEncryptionEnabled()) {
+    auto* local_state = g_browser_process->local_state();
+    DCHECK(local_state);
+
+    bool os_crypt_init = OSCrypt::Init(local_state);
+    DCHECK(os_crypt_init);
+  }
+#endif
 }
 
 device::mojom::GeolocationControl*
